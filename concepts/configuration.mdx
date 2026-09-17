@@ -1,5 +1,5 @@
 ---
-title: 'EVerest Configuration: YAML Files and Runtime API'
+title: 'EVerest Configuration: YAML Structure and Runtime API'
 sidebarTitle: 'Configuration'
 description: 'EVerest YAML configs declare module instances, config values, and connections. The Configuration API enables slot-based runtime management over MQTT.'
 ---
@@ -124,8 +124,17 @@ The manager exposes several flags that control how the configuration is loaded a
   </Tab>
 </Tabs>
 
+Additional lifecycle-related flags:
+
+| Flag | Description |
+|---|---|
+| `--graceful-shutdown` | Publish the MQTT shutdown signal and wait for modules to exit cleanly before force-killing. Without this flag, modules are terminated immediately on shutdown. |
+| `--recover-module-crashes` | Automatically reload and restart modules after an unexpected module exit, up to a bounded retry cap. |
+| `--idle-on-failure` | On startup or restart failure, enter `Idle` and report `FailedToStart` instead of exiting with an error code. |
+| `--status-fifo PATH` | Write single-line state transition events to a named FIFO for test automation. |
+
 <Warning>
-  The flags `--reset-from-yaml`, `--into-idle`, and `--idle-on-failure` are experimental and exempt from EVerest stability guarantees. They may change or be removed in any future release. The manager logs a warning at startup when any of these flags is used.
+  The flags `--reset-from-yaml`, `--into-idle`, `--idle-on-failure`, `--recover-module-crashes`, and `--graceful-shutdown` are experimental and exempt from EVerest stability guarantees. They may change or be removed in any future release. The manager logs a warning at startup when any of these flags is used.
 </Warning>
 
 ## Configuration Slots
@@ -165,22 +174,27 @@ EVerest uses two separate MQTT-based communication paths for configuration:
 
 Configuration parameters can be changed at runtime without restarting modules, subject to the parameter's `mutability` setting:
 
-| Mutability | Behavior |
+| Mutability | Meaning |
 |---|---|
-| `ReadWrite` | Change is persisted and delivered to the running module immediately |
-| `ReadOnly` | Change is persisted but only takes effect after the next module restart |
-| `WriteOnly` | Accepted and persisted; module may or may not apply it immediately |
+| `ReadWrite` | The parameter can be changed at runtime and takes effect immediately if the module accepts it |
+| `ReadOnly` | The parameter can only take effect after a module restart; a privileged caller granted `allow_set_read_only` may still write it, but the value applies on the next boot |
+| `WriteOnly` | The parameter value flows only to the module; it is not readable via the Configuration API |
 
-When a write targets the active slot and the module is running, the Configuration Service delivers the change to the module and waits for the module's verdict:
+When a write targets the **active** slot and the module is running, the Configuration Service first persists the change and then delivers it to the module. The per-parameter outcome reported back to the caller is one of:
 
-- **`Applied`** — the module accepted and applied the change immediately
-- **`WillApplyOnRestart`** — the module requires a restart to apply the change
-- **`Rejected`** — the module rejected the runtime change; the value is still persisted and will be loaded on the next restart
+| Outcome | Meaning |
+|---|---|
+| `Applied` | The module accepted and applied the change immediately |
+| `WillApplyOnRestart` | No runtime forwarding is set up; the persisted value will be loaded on the next restart |
+| `Rejected` | The module vetoed the runtime change; the value is still persisted and will be applied on restart |
+| `DoesNotExist` | The parameter does not exist in the active configuration |
+| `RetryLater` | Modules are in a transient state; retry after `Running` is restored |
+| `AccessDenied` | Access rules prevent this caller from writing the parameter |
 
-Writes to an **inactive** slot are always persisted directly to the database and take effect when that slot is activated and modules are restarted.
+Writes to an **inactive** slot are validated and persisted directly to the database without module interaction; they take effect when that slot is activated and modules are restarted.
 
 <Note>
-  Writes targeting the active slot are refused while modules are in a transient state (starting, stopping, or mid-restart). The API returns `ModulesInTransientState` in these cases. Retry the write once the system returns to `Running`.
+  Writes targeting the active slot are refused entirely while modules are in a transient state (starting, stopping, or mid-restart). The API returns `ModulesInTransientState` at the request level in these cases. Retry the write once the system returns to `Running`.
 </Note>
 
 ## What the Configuration API Cannot Do

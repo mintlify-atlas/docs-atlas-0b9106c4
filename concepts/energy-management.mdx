@@ -1,5 +1,5 @@
 ---
-title: 'EVerest Energy Management and Grid Integration'
+title: 'EVerest Energy Management: Trees, Nodes, and Limits'
 sidebarTitle: 'Energy Management'
 description: 'EVerest models energy systems as node trees. EnergyManager distributes power across EVSEs respecting fuse limits, external constraints, and OCPP schedules.'
 ---
@@ -62,24 +62,44 @@ vars:
 
 ## The EnergyManager Module
 
-The **EnergyManager** module sits above the energy tree and orchestrates power distribution. It connects to the root energy node via the `energy_trunk` requirement and runs on a configurable update interval (default: 1 second).
+The **EnergyManager** module sits above the energy tree and orchestrates power distribution. It connects to the root energy node via the `energy_trunk` requirement and runs on a configurable `update_interval` (default: 1 second).
 
 ```yaml
 energy_manager:
   module: EnergyManager
   config_module:
-    schedule_interval_duration: 60    # forecast slot duration [min]
-    schedule_total_duration: 10       # total forecast horizon [h]
+    schedule_interval_duration: 60           # forecast slot duration [min]
+    schedule_total_duration: 10              # total forecast horizon [h]
     debug: false
     switch_3ph1ph_while_charging_mode: Both
     switch_3ph1ph_max_nr_of_switches_per_session: 5
     switch_3ph1ph_time_hysteresis_s: 20
     switch_3ph1ph_power_hysteresis_W: 1000
+    switch_3ph1ph_switch_limit_stickyness: SinglePhase  # phase stickiness after switching
   connections:
     energy_trunk:
       - implementation_id: energy_grid
         module_id: grid_connection_point
 ```
+
+<Accordion title="EnergyManager config reference">
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `update_interval` | integer | `1` | How often (in seconds) to recalculate and enforce limits |
+| `schedule_interval_duration` | integer | `60` | Duration of each forecast schedule slot [min] |
+| `schedule_total_duration` | integer | `1` | Total forecast horizon [h] |
+| `nominal_ac_voltage` | number | `230.0` | Nominal AC voltage for Ampere-to-Watt conversions |
+| `slice_ampere` | number | `0.5` | Current trading slice [A]; lower = more even distribution but slower |
+| `slice_watt` | number | `500` | Power trading slice [W]; lower = more even distribution but slower |
+| `debug` | boolean | `false` | Print debug output to the console |
+| `switch_3ph1ph_while_charging_mode` | string | `Never` | Phase-switching mode: `Never`, `Oneway`, or `Both` |
+| `switch_3ph1ph_max_nr_of_switches_per_session` | integer | `0` | Maximum phase switches per session (0 = unlimited) |
+| `switch_3ph1ph_switch_limit_stickyness` | string | `DontChange` | Behavior after hitting the switch limit: `SinglePhase`, `ThreePhase`, `DontChange` |
+| `switch_3ph1ph_power_hysteresis_W` | integer | `200` | Power hysteresis for phase-switch decisions [W] |
+| `switch_3ph1ph_time_hysteresis_s` | integer | `600` | Time hysteresis: seconds 3-phase condition must be stable before switching up [s] |
+
+</Accordion>
 
 The EnergyManager's optimization algorithm:
 
@@ -93,7 +113,7 @@ The EnergyManager's optimization algorithm:
 
 Every energy node publishes an `EnergyFlowRequest` variable that describes what it wants and what it can handle. Leaf nodes (EvseManagers) publish their hardware capabilities and current charging state. Intermediate nodes (EnergyNodes) aggregate their children's requests and add their own fuse constraints.
 
-A typical leaf-node request (from the EVerest documentation) looks like this:
+A typical leaf-node request looks like this (showing both import and export schedules):
 
 ```json
 {
@@ -117,13 +137,28 @@ A typical leaf-node request (from the EVerest documentation) looks like this:
       "timestamp": "2024-12-17T13:08:36.479Z"
     }
   ],
-  "schedule_export": [ ... ],
+  "schedule_export": [
+    {
+      "limits_to_root": {
+        "ac_max_current_A": { "value": 16.0, "source": "EVSE1_root" },
+        "ac_max_phase_count": { "value": 3, "source": "EVSE1_phase" },
+        "ac_min_current_A": { "value": 0.0, "source": "EVSE1_mincurrent" },
+        "ac_min_phase_count": { "value": 1, "source": "EVSE1_minphase" },
+        "ac_number_of_active_phases": 3,
+        "ac_supports_changing_phases_during_charging": true
+      },
+      "limits_to_leaves": {
+        "ac_max_current_A": { "value": 10.0, "source": "EVSE1_leave" }
+      },
+      "timestamp": "2024-12-17T13:08:36.479Z"
+    }
+  ],
   "schedule_setpoints": [],
   "uuid": "evse1"
 }
 ```
 
-Each schedule entry carries a `source` string on every limit value so the EnergyManager can trace which constraint is the binding factor in its distribution result.
+Each schedule entry carries a `source` string on every limit value so the EnergyManager can trace which constraint is the binding factor in its distribution result. The `schedule_setpoints` list carries optional time-series setpoints (in Watts or Amperes) that allow external control over the precise operating point — for example, to command discharge at a specific power in a bidirectional (V2G) scenario.
 
 ## External Energy Limits
 
@@ -294,7 +329,7 @@ Phase switching requires coordinated configuration across three modules:
 
 | Module | Required Settings |
 |---|---|
-| `EnergyManager` | `switch_3ph1ph_while_charging_mode: Both` (or `Oneway`), hysteresis parameters |
+| `EnergyManager` | `switch_3ph1ph_while_charging_mode: Both` (or `Oneway`), `switch_3ph1ph_max_nr_of_switches_per_session`, `switch_3ph1ph_time_hysteresis_s`, `switch_3ph1ph_power_hysteresis_W`, `switch_3ph1ph_switch_limit_stickyness` |
 | `EvseManager` | `switch_3ph1ph_delay_s`, `switch_3ph1ph_cp_state` |
 | BSP module (evse_board_support) | `supports_changing_phases_during_charging: true`, min phases = 1, max phases = 3 |
 
@@ -307,3 +342,12 @@ The EnergyManager's phase switching algorithm works best with a **Watt-based** e
 ## Integration with OCPP Smart Charging
 
 When an OCPP module is present, its charging schedule translates directly into `set_external_limits` calls on the appropriate EnergyNode implementations. The EnergyManager then factors these OCPP-sourced limits into its next distribution calculation alongside hardware fuse limits and any other active external limits. This means OCPP smart charging profiles, local load management, and solar export constraints all coexist in the same energy tree without conflict.
+
+## Current Limitations
+
+The energy distribution algorithm has the following known limitations:
+
+- The algorithm does not account for real-time power meter readings from individual nodes. Actual consumption below the assigned target is not detected or redistributed.
+- Unused power allocations are not redistributed to other nodes when a vehicle draws less than its assigned budget.
+
+These limitations are relevant when deploying EVerest in installations where real-time dynamic load balancing based on measured consumption (rather than capability-based requests) is required.

@@ -41,6 +41,26 @@ The EVerest `manager` binary is the single long-lived process at the heart of ev
 
 ---
 
+## Management APIs
+
+<ParamField path="--configuration-api" type="ro|rw">
+  Start the Configuration API. The value must be `ro` (read-only, the default when no value is given) or `rw` (read-write). Without a value the option defaults to read-only mode. The API is disabled unless this option is given.
+
+  ```bash
+  manager --config config-sil.yaml --configuration-api=rw --db /var/lib/everest/everest.db
+  ```
+</ParamField>
+
+<ParamField path="--lifecycle-api" type="ro|rw">
+  Start the Lifecycle API. The value must be `ro` (read-only, the default when no value is given) or `rw` (read-write). Without a value the option defaults to read-only mode. The API is disabled unless this option is given.
+
+  ```bash
+  manager --config config-sil.yaml --lifecycle-api=rw
+  ```
+</ParamField>
+
+---
+
 ## Configuration and Storage
 
 <ParamField path="--config" type="path">

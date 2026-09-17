@@ -1,5 +1,5 @@
 ---
-title: 'EVerestAPI: MQTT External API Reference'
+title: 'EVerestAPI: MQTT External API for EV Charging Stations'
 sidebarTitle: 'EVerestAPI'
 description: 'Stable MQTT external API for EVerest using AsyncAPI 3.0. Integrate external apps and hardware via versioned providing and consuming API modules.'
 ---
@@ -66,6 +66,10 @@ requires:
     max_connections: 1
   ps_dc:
     interface: power_supply_DC
+    min_connections: 0
+    max_connections: 1
+  random_delay:
+    interface: uk_random_delay
     min_connections: 0
     max_connections: 1
 ```
@@ -291,8 +295,8 @@ Every EVerestAPI module exposes these shared parameters:
   Maximum seconds between client communication-check messages. Set to `≤ 0` to disable liveness checking. Disabling is not recommended in production.
 </ParamField>
 
-<ParamField body="cfg_request_reply_to_s" type="integer">
-  Seconds the API module waits for a client reply to a command invocation before issuing a default response. Only present on modules that implement internal interfaces (providing APIs). Cannot be disabled.
+<ParamField body="cfg_request_reply_to_s" type="integer" default="550">
+  Seconds the API module waits for a client reply to a command invocation before issuing a default response. Only present on modules that implement internal interfaces (providing APIs). Valid range: 1–550 seconds.
 </ParamField>
 
 <ParamField body="latch_variable_values" type="boolean" default="true">

@@ -1,5 +1,5 @@
 ---
-title: 'RpcApi: JSON-RPC WebSocket API Reference'
+title: 'RpcApi: JSON-RPC 2.0 WebSocket API for EV Charging'
 sidebarTitle: 'RpcApi'
 description: 'JSON-RPC 2.0 over WebSocket API for reading EVSE status, monitoring charging sessions, and controlling charging parameters from external applications.'
 ---
@@ -13,6 +13,7 @@ The RpcApi module provides a standardized JSON-RPC 2.0 interface over WebSocket 
 | WebSocket transport (no TLS) | ✅ Supported |
 | WebSocket transport (with TLS) | ❌ Not yet implemented |
 | Authentication / permission handling | ❌ Not yet implemented |
+| Scope configuration | ❌ Not yet implemented |
 | Multiple EVSE support | ✅ Supported |
 | Multiple connector support | ❌ Not yet implemented |
 | EVSE information retrieval | ✅ Supported |
@@ -131,13 +132,21 @@ Methods are organized into three hierarchical namespaces: **API** (general hands
   ```json
   {
     "authentication_required": "bool",
+    "authenticated": "bool",
+    "permission_scopes": "PermissionScopes",
     "api_version": "string",
+    "everest_version": "string",
     "charger_info": {
       "vendor": "string",
       "model": "string",
       "serial": "string",
       "friendly_name": "string",
       "manufacturer": "string",
+      "manufacturer_url": "string",
+      "model_url": "string",
+      "model_no": "string",
+      "revision": "string",
+      "board_revision": "string",
       "firmware_version": "string"
     }
   }
@@ -199,8 +208,10 @@ Methods are organized into three hierarchical namespaces: **API** (general hands
         "origin": {
           "module_id": "string",
           "implementation_id": "string",
-          "evse_index": 1
+          "evse_index": 1,
+          "connector_index": 1
         },
+        "vendor_id": "string",
         "severity": "string",
         "timestamp": "string",
         "uuid": "string"
@@ -210,7 +221,7 @@ Methods are organized into three hierarchical namespaces: **API** (general hands
   }
   ```
 
-  Returns an empty array when no errors are active.
+  Returns an empty array when no errors are active. The `origin.evse_index`, `origin.connector_index`, and `vendor_id` fields are optional.
 </Accordion>
 
 ### EVSE Namespace

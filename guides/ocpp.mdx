@@ -43,7 +43,7 @@ Within OCPP 2.x, the concrete version (2.0.1 or 2.1) is negotiated with the CSMS
 
     1. Start SteVe and add chargepoint ID `cp001` in its web interface.
     2. Add OCPP tags in SteVe if you want to simulate authorized charging sessions.
-    3. Run the SIL script. On first startup, set `EnableLegacyConfigMigration: true` (described below) so SteVe's URL is pulled from the legacy JSON config.
+    3. Set `EnableLegacyConfigMigration: true` in the OCPPmulti module config (it defaults to `false`), then run the SIL script. On the very first startup, when no device model database exists yet, this triggers a one-time migration of the legacy JSON config so SteVe's URL is read from `ChargePointConfigPath`.
 
     The CSMS URL and security settings live in the legacy OCPP 1.6 JSON config referenced by the `ChargePointConfigPath` module parameter. An example JSON connecting to a local SteVe instance:
 

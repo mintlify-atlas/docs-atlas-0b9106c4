@@ -26,7 +26,7 @@ Every EVerest deployment is composed of exactly three kinds of components that w
 
 Modules communicate via two primitives defined in interface contracts:
 
-- **CMDs (Commands)** — synchronous remote procedure calls. The calling module publishes a request to `everest/{module_instance_id}/{impl_id}/cmd` and waits for a response on the same topic.
+- **CMDs (Commands)** — synchronous remote procedure calls. The calling module publishes a request to `everest/{module_instance_id}/{impl_id}/cmd` and blocks until it receives a response on a private reply topic. The framework handles the reply-topic plumbing transparently.
 - **VARs (Variables)** — asynchronous publications. A module publishes state updates to `everest/{module_instance_id}/{impl_id}/var`, and any number of other modules can subscribe to receive those updates.
 
 This means all communication — whether a module is calling a function or broadcasting sensor data — uses MQTT publish/subscribe mechanics. Modules never call each other directly; the broker is always in the middle.
@@ -71,7 +71,7 @@ Each state transition is reported to the Configuration API as a module status ev
     Each module performs its initialization, calls `ready()`, and publishes a ready signal on MQTT. The manager tracks these signals.
   </Step>
   <Step title="System enters Running">
-    Once every non-ignored module has reported ready, the manager transitions to `Running` and publishes the global ready signal on `{mqtt_everest_prefix}ready`.
+    Once every non-ignored module has reported ready, the manager transitions to `Running` and publishes the global ready signal on `<mqtt_everest_prefix>ready`.
   </Step>
 </Steps>
 

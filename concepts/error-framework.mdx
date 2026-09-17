@@ -1,5 +1,5 @@
 ---
-title: 'Error Handling with the EVerest Error Framework'
+title: 'EVerest Error Framework: Raise, Clear, and Subscribe'
 sidebarTitle: 'Error Framework'
 description: 'The EVerest error framework provides typed raise, clear, and subscribe across module boundaries for fault coordination and centralized error reporting.'
 ---
@@ -32,7 +32,7 @@ Every error in EVerest is represented as an instance of the `Error` class, which
 | `severity` | Severity level of the error |
 | `timestamp` | UTC timestamp of when the error was raised (immutable after creation) |
 | `uuid` | Unique identifier for this error instance (immutable after creation) |
-| `state` | Current state: `Active` or `Cleared` |
+| `state` | Current state: `Active`, `ClearedByModule`, or `ClearedByReboot` |
 
 </Accordion>
 
@@ -155,17 +155,28 @@ bool is_fault_active = r_bsp->error_state_monitor->is_error_active(
 );
 
 // Check a set of conditions simultaneously
-Everest::error::StateCondition cond1{
+Everest::error::ErrorStateMonitor::StateCondition cond1{
     "powermeter/CommunicationFault", "", true   // active = true
 };
-Everest::error::StateCondition cond2{
+Everest::error::ErrorStateMonitor::StateCondition cond2{
     "evse_board_support/MREC5", "", false        // active = false (cleared)
 };
 
-bool ready_to_charge = r_bsp->error_state_monitor->is_condition_satisfied({cond1, cond2});
+bool ready_to_charge = r_bsp->error_state_monitor->is_condition_satisfied(
+    std::list<Everest::error::ErrorStateMonitor::StateCondition>{cond1, cond2}
+);
 ```
 
-`is_condition_satisfied()` accepts either a single `StateCondition` or a vector of conditions and returns `true` only when all conditions are simultaneously satisfied.
+`is_condition_satisfied()` accepts either a single `StateCondition` or a `std::list` of conditions and returns `true` only when all conditions are simultaneously satisfied.
+
+A third method, `get_active_errors()`, returns the full list of currently active errors for the monitored scope (implementation or requirement):
+
+```cpp
+auto active = r_bsp->error_state_monitor->get_active_errors();
+for (const auto& err : active) {
+    EVLOG_warning << "Active BSP error: " << err->type;
+}
+```
 
 ## 3-Tier Error Mapping
 

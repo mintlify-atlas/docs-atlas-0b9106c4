@@ -64,6 +64,14 @@ The `EnergyNode` module represents an intermediate node in the energy tree — t
 | `energy_grid` | `energy` | Chain interface connecting this node to its parent (EnergyManager or another EnergyNode) |
 | `external_limits` | `external_energy_limits` | Accept externally-set limits (from OCPP smart charging, solar controller, etc.) |
 
+### EnergyNode Required Interfaces
+
+| Requirement key | Interface | Min | Max | Description |
+|-----------------|-----------|-----|-----|-------------|
+| `energy_consumer` | `energy` | 1 | 128 | Child nodes (EvseManagers or nested EnergyNodes) that consume energy through this node |
+| `powermeter` | `powermeter` | 0 | 1 | Optional meter reporting actual consumption at this node for improved scheduling accuracy |
+| `price_information` | `energy_price_information` | 0 | 1 | Optional energy price feed used for cost-aware scheduling |
+
 ## EnergyManager Configuration
 
 | Parameter | Type | Default | Description |
@@ -120,18 +128,16 @@ The following fragment from an EVerest config YAML illustrates a two-EVSE deploy
 active_modules:
   energy_manager:
     module: EnergyManager
-    config_implementation:
-      main:
-        update_interval: 1
-        slice_ampere: 0.5
-        nominal_ac_voltage: 230.0
+    config_module:
+      update_interval: 1
+      slice_ampere: 0.5
+      nominal_ac_voltage: 230.0
 
   energy_node:
     module: EnergyNode
-    config_implementation:
-      energy_grid:
-        fuse_limit_A: 32.0
-        phase_count: 3
+    config_module:
+      fuse_limit_A: 32.0
+      phase_count: 3
     connections:
       energy_consumer:
         - module_id: evse1

@@ -1,5 +1,5 @@
 ---
-title: 'OCPP Modules: OCPP 1.6, 2.0.1, and 2.1 Support'
+title: 'OCPP Modules: OCPP 1.6, 2.0.1, and 2.1 for EVerest'
 sidebarTitle: 'OCPP'
 description: 'EVerest provides OCPPmulti (recommended, OCPP 1.6/2.0.1/2.1 in one module) plus separate legacy OCPP 1.6 and OCPP 2.0.1 modules for strict version pinning.'
 ---
@@ -89,6 +89,7 @@ OCPPmulti connects to up to 128 EvseManager instances and a set of supporting mo
 | `DeviceModelDatabasePath` | string | `device_model_storage.db` | SQLite database for the OCPP device model |
 | `DeviceModelDatabaseMigrationPath` | string | `device_model_migrations` | Migration files for device model schema upgrades |
 | `EverestDeviceModelDatabasePath` | string | `everest_device_model_storage.db` | EVerest-owned device model (EVSE/Connector components) |
+| `DeviceModelConfigMappings` | string | `""` | Optional path to a YAML file with custom OCPP 1.6-to-device-model component-config mappings; used during legacy config migration and at runtime |
 
 </Accordion>
 
@@ -159,6 +160,7 @@ The `OCPP201` module targets OCPP 2.0.1 only. It is functionally identical to OC
 - `reservation` is optional (min\_connections = 0), matching OCPPmulti behavior.
 - No `grid_support` requirement (OCPP 2.1 DER directives are OCPPmulti-only).
 - No `DelegateNetworkConfigurationToSystem` parameter.
+- No `GridSupportHeartbeatS` parameter (DER directive heartbeat is OCPPmulti-only).
 
 ## Choosing the Right Module
 

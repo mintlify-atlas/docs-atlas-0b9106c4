@@ -222,9 +222,22 @@ On resource-constrained SoMs, CPU scheduling can affect ISO 15118 timing complia
 Nice=-20
 ```
 
-Use a **preemptive kernel** (`CONFIG_PREEMPT`) to reduce user-space latency. This is especially important during the ISO 15118 `CableCheck` phase, which has strict timing requirements (the full phase must complete within ~25–30 seconds for broad EV compatibility).
+Use a **preemptive kernel** (enable `CONFIG_PREEMPT` in the kernel configuration) to reduce user-space latency. This is especially important during the ISO 15118 `CableCheck` phase, which has strict timing requirements (the full phase must complete within ~25–30 seconds for broad EV compatibility).
 
 If other processes compete for CPU during charging, set their nice levels higher (closer to 19) to ensure EVerest gets priority.
+
+## Supported Hardware Platforms
+
+EVerest's hardware requirements are modest and it runs on any Linux-capable SoM. The EVerest project documents the following minimum and recommended CPU targets:
+
+| Tier | Example SoM | Notes |
+|---|---|---|
+| Minimum | i.MX6ULL | Sufficient for AC-only, single-EVSE deployments |
+| Recommended | i.MX93 or AM62x | Better headroom for DC charging and ISO 15118 HLC timing |
+
+RAM: 512 MB minimum, 1 GB or more recommended. Flash: 1 GB minimum, 4 GB or more recommended for logs, certificates, and A/B root partitions.
+
+A Yocto SDK for the PHYTEC phyVERSO board (AM62x-based) is available from the PHYTEC `ampliphy-rauc` distribution and referenced in the EVerest cross-compilation guide.
 
 ## Reference Hardware and BelayBox
 

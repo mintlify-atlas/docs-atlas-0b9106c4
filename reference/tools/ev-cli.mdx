@@ -128,8 +128,8 @@ The `module`, `interface`, and `types` subcommands all accept the following opti
   Working directory that contains the `modules/` tree and manifest definitions.
 </ParamField>
 
-<ParamField path="--everest-dir" type="string (repeatable)" default=". and ../EVerest">
-  Root directory of EVerest core, or any directory containing `interfaces/` and `types/` subdirectories. Can be repeated to merge definitions from multiple directories.
+<ParamField path="--everest-dir" type="string (space-separated list)" default="auto-detected from install and ../EVerest">
+  One or more root directories of EVerest core, or any directory containing `interfaces/` and `types/` subdirectories. Pass multiple paths as space-separated values to merge definitions from several directories. Short alias: `-ed`.
 </ParamField>
 
 <ParamField path="--schemas-dir" type="string" default="../everest-framework/schemas">
@@ -145,7 +145,15 @@ The `module`, `interface`, and `types` subcommands all accept the following opti
 </ParamField>
 
 <ParamField path="--build-dir" type="string" default="./build">
-  EVerest build directory. Used to auto-discover the schemas directory from `CMakeCache.txt` when `--schemas-dir` is not specified.
+  EVerest build directory. Used to auto-discover the schemas directory from `CMakeCache.txt` when `--schemas-dir` is not specified. Short alias: `-bd`.
+</ParamField>
+
+<ParamField path="--everest-projects" type="string (space-separated list)" default="EVerest">
+  EVerest project names used for automatic directory detection. Enables `ev-cli` to locate the `interfaces/` and `types/` trees of named projects relative to the build directory. Short alias: `-ep`.
+</ParamField>
+
+<ParamField path="--licenses" type="string" default="../licenses">
+  Directory from which `ev-cli` attempts to parse custom license header texts. License headers are embedded in every generated file. The built-in Apache-2.0 header is always available; point this at a directory with additional `.txt` files to support other licenses referenced in `manifest.yaml`. Short alias: `-lc`.
 </ParamField>
 
 ## Examples

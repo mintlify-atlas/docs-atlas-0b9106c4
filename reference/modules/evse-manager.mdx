@@ -1,5 +1,5 @@
 ---
-title: 'EvseManager Module: EVSE Control and IEC 61851'
+title: 'EvseManager Module: EVSE Control, IEC 61851 and ISO 15118'
 sidebarTitle: 'EvseManager'
 description: 'EvseManager drives the IEC 61851 state machine, charging session lifecycle, HLC via ISO 15118, and the energy tree leaf node for one EVSE connector.'
 ---
@@ -156,12 +156,72 @@ The following parameters are defined in the module's `manifest.yaml`. Parameters
 | `session_logging` | boolean | `false` | Enable session log file output |
 | `session_logging_path` | string | `/tmp` | Directory for session log files |
 | `session_logging_xml` | boolean | `true` | Include full XML HLC messages in session logs |
+| `logfile_suffix` | string | `session_uuid` | Suffix for the session log folder name; the special value `session_uuid` is replaced with the actual session UUID |
 | `has_ventilation` | boolean | `true` | Allow ventilated charging (IEC 61851 mode D) |
-| `initial_meter_value_timeout_ms` | integer | `5000` | Time to wait for first powermeter reading before allowing sessions to start |
+| `initial_meter_value_timeout_ms` | integer | `5000` | Time to wait for first powermeter reading before allowing sessions to start (0 = do not wait) |
 | `fail_on_powermeter_errors` | boolean | `true` | Set EVSE inoperative when a configured powermeter reports errors |
 | `session_id_type` | enum | `UUID` | Session ID format: `UUID`, `UUID_BASE64`, or `SHORT_BASE64` |
 | `external_ready_to_start_charging` | boolean | `false` | Delay charging-ready signal until an external module confirms readiness |
 | `internal_over_voltage_duration_ms` | integer | `400` | Time DC voltage must exceed negotiated limit before raising MREC5 |
+| `ev_receipt_required` | boolean | `false` | Reserved — request receipt from EV over HLC (currently unsupported) |
+| `dbg_hlc_auth_after_tstep` | boolean | `false` | Debug mode: send HLC authorization confirmation only after `t_step_XX` has completed |
+| `raise_mrec9` | boolean | `false` | Raise MREC9 authorization-timeout error on auth timeout; recommended to leave `false` when using OCPP 1.6 |
+| `sleep_before_enabling_pwm_hlc_mode_ms` | integer | `500` | Delay (ms) before updating the PWM signal in HLC mode, allowing SLAC to initialize before Tesla-style rapid SLAC packets arrive |
+| `inoperative_error_use_vendor_id` | boolean | `false` | When raising `evse_manager/Inoperative`, propagate the vendor ID from the original fault cause |
+| `enable_nodered_interface` | boolean | `false` | Enable the external MQTT interface for the Node-RED debug UI (topics under `everest_external/nodered/<connector_id>/`) |
+| `phase_rotation_grid_side` | enum | `RST` | Corrects physical L1/L2/L3 wiring rotation at the grid-side powermeter: `RST` (no rotation), `STR`, or `TRS` |
+| `hlc_charge_loop_without_energy_timeout_s` | integer | `5` | Seconds the HLC charge loop may continue without available energy before the session is stopped and PWM is disabled |
+
+</Accordion>
+
+<Accordion title="DC cable check (advanced)">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cable_check_enable_imd_self_test_relays_open` | boolean | `false` | Run IMD self-test at the beginning of cable check while relays are still open; `cable_check_wait_number_of_imd_measurements` must be ≥ 1 |
+| `cable_check_relays_open_voltage_V` | integer | `48` | DC output voltage used for the open-relay IMD self-test |
+| `cable_check_relays_closed_timeout_s` | integer | `5` | Timeout (seconds) to wait for relays to close at the start of cable check |
+
+</Accordion>
+
+<Accordion title="Voltage plausibility monitoring">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `voltage_plausibility_max_spread_threshold_V` | number | `50.0` | Maximum allowed spread (max−min) in volts between voltage readings from different sources (power supply, powermeter, IMD, over-voltage monitor) before a fault is raised |
+| `voltage_plausibility_fault_duration_ms` | integer | `30000` | Duration (ms) the spread must exceed the threshold before the fault fires; 0 = raise immediately |
+
+</Accordion>
+
+<Accordion title="Zero-power and pause behavior">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `zero_power_ignore_pause` | boolean | `true` | Ignore the pause-before-cable-check signal when no energy is available; non-standard but most EVs recover more gracefully this way |
+| `zero_power_allow_ev_to_ignore_pause` | boolean | `false` | Ignore the EV proceeding to the energy phase instead of pausing when instructed; non-standard |
+
+</Accordion>
+
+<Accordion title="Connector lock behavior">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `lock_connector_in_state_b` | boolean | `true` | Lock connector in CP state B. Setting `false` violates IEC 61851-1:2019 D.6.5 Table D.9 and must not be used in public environments. This feature is deprecated. |
+| `unlock_when_deauthorized` | boolean | `false` | When `true`, keep connector unlocked in state B/C if relays are open and no user is authorized. Setting `true` violates IEC 61851-1:2019 D.6.5 Table D.9 and must not be used in public environments. |
+
+</Accordion>
+
+<Accordion title="Hack / workaround parameters">
+
+These parameters work around interoperability issues with specific EV models or power-supply hardware. They deviate from the relevant standards and must not be enabled for public charging deployments.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `hack_skoda_enyaq` | boolean | `false` | Workaround for Skoda Enyaq requesting DC voltages below battery level or below 0 V during initial setup |
+| `hack_present_current_offset` | integer | `0` | Offset in amperes added to the present-current value reported to the EV over HLC |
+| `hack_allow_bpt_with_iso2` | boolean | `false` | Allow bidirectional power transfer with DIN SPEC 70121 and ISO 15118-2; HLC currents are always reported as positive |
+| `hack_simplified_mode_limit_10A` | boolean | `false` | Limit PWM to 10 A when an EV uses IEC 61851 simplified charging mode; non-standard — the norm requires the EV to self-limit |
+| `hack_fix_hlc_integer_current_requests` | boolean | `false` | Charge at full power when an EV requests only integer ampere values and the difference from the HLC current limit is less than 1 A |
 
 </Accordion>
 

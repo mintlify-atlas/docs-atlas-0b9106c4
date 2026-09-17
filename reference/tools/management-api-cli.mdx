@@ -1,5 +1,5 @@
 ---
-title: 'management-api-cli: EVerest Runtime Control Tool'
+title: 'management-api-cli: EVerest Manager Runtime Control'
 sidebarTitle: 'management-api-cli'
 description: "everest-management-api-cli is a CLI client for EVerest's Lifecycle and Configuration MQTT APIs — list slots, set parameters, and start or stop modules."
 ---
@@ -60,8 +60,8 @@ Every one-shot invocation accepts the following global options before the comman
   Print replies as single-line JSON instead of pretty-printed output. Convenient for piping into `jq`.
 </ParamField>
 
-<ParamField path="--verbose / -v" type="flag">
-  Log MQTT client connection details to stderr.
+<ParamField path="--verbose" type="flag">
+  Log MQTT client connection details to stderr. Short alias: `-v`.
 </ParamField>
 
 ## Interactive Shell
@@ -202,7 +202,15 @@ everest-management-api-cli [--host HOST] [--port PORT] [--timeout SECONDS] [--co
     everest-management-api-cli load config/my-station.yaml -d "new layout"
     # Load into an existing slot instead of creating a new one:
     everest-management-api-cli load config/my-station.yaml --slot 1
+    # Send the file contents unchanged, skipping active_modules extraction:
+    everest-management-api-cli load config/raw-modules.yaml --as-is
     ```
+
+    | Option | Description |
+    |--------|-------------|
+    | `-d, --description TEXT` | Description for the slot. |
+    | `--slot SLOT_ID` | Load into this existing slot instead of creating a new one. |
+    | `--as-is` | Send the file contents unchanged, bypassing the automatic `active_modules` extraction. |
   </Accordion>
 
   <Accordion title="config SLOT — Get the full configuration for a slot">
@@ -225,7 +233,15 @@ everest-management-api-cli [--host HOST] [--port PORT] [--timeout SECONDS] [--co
     everest-management-api-cli getp 0 example current --impl example
     # All parameters from a file:
     everest-management-api-cli getp 0 --file params.yaml
+    # Read the persisted (database) value instead of the in-memory value:
+    everest-management-api-cli getp 0 example log_interval --db
     ```
+
+    | Option | Description |
+    |--------|-------------|
+    | `--impl IMPLEMENTATION_ID` | Address an implementation-level parameter instead of a module-level one. |
+    | `--file FILE` | YAML file listing parameters to query (values in the file are ignored). |
+    | `--db` | Read the persisted database value instead of the current in-memory value. |
   </Accordion>
 
   <Accordion title="setp SLOT MODULE PARAMETER VALUE — Set a parameter value">

@@ -1,5 +1,5 @@
 ---
-title: 'Bring Up EVerest on Charging Hardware'
+title: 'EVerest Hardware Quickstart: Bring Up Charging Hardware'
 sidebarTitle: 'HW Quickstart'
 description: 'Bring EVerest up on real charging hardware step by step, from board support verification and powermeter testing to a live AC or DC charging session.'
 ---
@@ -71,14 +71,14 @@ A BringUp configuration file looks like this — each BringUp module is marked `
 
 ```yaml
 active_modules:
-  bsp_ui:
+  im_cli:
     standalone: true
     module: BUIsolationMonitor
     connections:
       imd:
         - implementation_id: main
           module_id: iso_monitor
-  powersupply_ui:
+  powersupply_cli:
     standalone: true
     module: BUPowerSupplyDC
     connections:
@@ -178,7 +178,7 @@ active_modules:
   <Step title="DC Only — Verify DC Power Supply and Isolation Monitor">
     For DC chargers, two additional subsystems must be verified before attempting a charging session.
 
-    **DC Power Supply:** Use the `BUPowerSupplyDC` BringUp module with your power supply driver. Example configurations are provided for Huawei (`config-bringup-huawei.yaml`), UUGreen (`config-bringup-uugreen.yaml`), and API-based supplies (`config-bringup-api-powersupply.yaml`).
+    **DC Power Supply:** Use the `BUPowerSupplyDC` BringUp module with your power supply driver. Example configurations are provided for Huawei (`config-bringup-huawei.yaml`), UUGreen (`config-bringup-uugreen.yaml`), and API-based supplies (`config-bringup-api-power-supply-DC.yaml`).
 
     Key checks:
     - Reported capabilities match manufacturer specifications.
@@ -188,7 +188,7 @@ active_modules:
     - Measured output voltage is reported back to EVerest at least once per second.
     - Power supply switches off within ~10–20 seconds after communication loss.
 
-    **Isolation Monitor:** Use the `BUIsolationMonitor` BringUp module. The isolation monitor must comply with IEC 61557-8. Example SIL config at `config/config-bringup-isolation-monitor-sil.yaml`.
+    **Isolation Monitor:** Use the `BUIsolationMonitor` BringUp module. The isolation monitor must comply with IEC 61557-8. Example SIL config at `config/bringup/config-bringup-isolation-monitor-sil.yaml`.
 
     Key checks:
     - With the power supply at 500 V, the IMD reports the correct bus voltage.

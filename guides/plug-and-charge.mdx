@@ -4,7 +4,7 @@ sidebarTitle: 'Plug & Charge'
 description: 'Configure ISO 15118 Plug & Charge in EVerest: required modules, PKI infrastructure, the step-by-step authorization flow, and a SIL simulation walkthrough.'
 ---
 
-Plug & Charge (PnC) allows an electric vehicle to authorize a charging session automatically using a contract certificate embedded in the vehicle — no RFID card or app required. EVerest implements PnC for both ISO 15118-2 and ISO 15118-20, supporting OCPP 1.6J (via the Security and PnC whitepapers) and OCPP 2.0.1/2.1. The Software-in-the-Loop (SIL) environment lets you validate the full end-to-end flow before deploying to hardware.
+Plug & Charge (PnC) allows an electric vehicle to authorize a charging session automatically using a contract certificate embedded in the vehicle — no RFID card or app required. EVerest implements PnC for ISO 15118-2, supporting OCPP 1.6J (via the Security and PnC whitepapers) and OCPP 2.0.1. The Software-in-the-Loop (SIL) environment lets you validate the full end-to-end flow before deploying to hardware.
 
 ## Required Modules
 
@@ -61,6 +61,10 @@ The `EvseSecurity` module manages all certificate storage and exposes the `evse_
     ```
 
     This installs CA certificates under `config/certs/ca` and client certificates, private keys, and password files under `config/certs/client`.
+
+    <Note>
+      The PKI script uses the Java `keytool` command — Java must be installed on the host running `create_certs.sh`.
+    </Note>
   </Step>
 
   <Step title="Start the CSMS">

@@ -1,5 +1,5 @@
 ---
-title: 'Get Started with EVerest in Software'
+title: 'EVerest Software Quickstart: Build and Run on Linux'
 sidebarTitle: 'SW Quickstart'
 description: 'Build EVerest from source on Linux, then run a full AC software-in-the-loop simulation with a Node-RED control UI — no hardware required.'
 ---
@@ -133,7 +133,7 @@ Before building, confirm the following general requirements are met on your mach
     ./run-scripts/nodered-sil.sh
     ```
 
-    Then open your browser at [http://localhost:1880/ui](http://localhost:1880/ui) to reach the simulation control panel. You can use the **CAR PLUGIN**, **PAUSE**, **RESUME**, and **UNPLUG** buttons to simulate a complete AC charging session.
+    Then open your browser at [http://localhost:1880/ui](http://localhost:1880/ui) to reach the simulation control panel. You can use the **Car Plugin**, **Pause**, **Resume**, and **Stop & Unplug** buttons to simulate a complete AC charging session.
   </Step>
 </Steps>
 
@@ -173,7 +173,7 @@ active_modules:
 
 ## Understanding EVerest Modules
 
-Once the simulation is running, the manager process logs show each module starting up. MQTT topics follow the pattern `everest/<module_id>/<implementation_id>/`. You can inspect live traffic with any MQTT client:
+Once the simulation is running, the manager process logs show each module starting up. MQTT topics follow the pattern `everest/{module_id}/{implementation_id}/cmd` for commands and `everest/{module_id}/{implementation_id}/var` for variables. You can inspect all live traffic with any MQTT client:
 
 ```bash
 mosquitto_sub -h localhost -p 1883 -t 'everest/#' -v

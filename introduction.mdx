@@ -1,5 +1,5 @@
 ---
-title: 'EVerest: Open-Source EV Charging Firmware Stack'
+title: 'EVerest: Open-Source EV Charging Station Framework'
 sidebarTitle: 'Introduction'
 description: 'EVerest is a Linux Foundation Energy open-source firmware stack for EV charging stations — modular, standards-compliant, and hardware-agnostic.'
 ---
@@ -39,9 +39,9 @@ EVerest is built around a **microservice-like module architecture**. Each functi
 
 The **Manager** process is the orchestrator: it reads a YAML configuration file, resolves module dependency graphs, spawns each module as a child process, and supervises the system lifetime. Modules declare their capabilities and requirements in a `manifest.yaml` file. The framework validates connections at startup and routes MQTT messages according to the declared interface topology.
 
-Modules can be written in **C++**, **Python**, **JavaScript**, or **Rust**. The `ev-cli` developer tool generates implementation stubs from manifest and interface definitions, so adding a new module or hardware driver requires writing only the business logic.
+Modules can be written in **C++**, **Python**, or **Rust**. The `ev-cli` developer tool generates implementation stubs from manifest and interface definitions, so adding a new module or hardware driver requires writing only the business logic.
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │                   EVerest Manager                   │
 │        (reads config, spawns & supervises)          │

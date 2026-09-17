@@ -14,7 +14,7 @@ EVerest exposes two management APIs — the **Configuration API** and the **Life
 
 ## Activating the APIs
 
-Pass one or both flags to the manager (or to any run-script that forwards extra arguments):
+The `--configuration-api` and `--lifecycle-api` flags are standard `manager` binary options (see the [Manager CLI reference](./manager-cli)). Pass one or both to the manager (or to any run-script that forwards extra arguments):
 
 <Tabs>
   <Tab title="Read-only">
@@ -245,6 +245,7 @@ everest-api> active
 { "active_slot_id": 0, "next_boot_slot_id": 1 }
 
 everest-api> config 0          # full module configuration of slot 0
+everest-api> config 0 --db     # read persisted (db) value instead of in-memory value
 ```
 
 ```text Load and duplicate slots
@@ -252,9 +253,16 @@ everest-api> config 0          # full module configuration of slot 0
 everest-api> load --description "SIL setup" /path/to/config-sil.yaml
 { "error_message": "", "slot_id": 1, "success": true }
 
+# Load into an existing slot instead of creating a new one
+everest-api> load --slot 1 /path/to/config-sil.yaml
+
 # Duplicate an existing slot
 everest-api> dup 1 --description "Copy of SIL for testing"
 { "slot_id": 2, "success": true }
+
+# Update the description of an existing slot
+everest-api> desc 1 Updated SIL description
+{ "result": "Success" }
 
 # Delete a slot (not the active or next-boot slot)
 everest-api> delete 2
@@ -269,13 +277,19 @@ everest-api> mark 1
 ```
 
 ```text Read and write parameters
-# Read a single parameter
+# Read a single module-level parameter
 everest-api> getp 0 example log_interval
 
-# Write a single parameter
+# Read an implementation-level parameter
+everest-api> getp 0 example current --impl example
+
+# Read persisted (db) value for a parameter pending restart
+everest-api> getp 0 example enum_test2 --impl example --db
+
+# Write a single module-level parameter
 everest-api> setp 0 example log_interval 5
 
-# Write implementation-level parameter
+# Write an implementation-level parameter
 everest-api> setp 0 example current --impl example 40
 
 # Bulk read/write from a partial YAML file
@@ -302,11 +316,16 @@ active_modules:
 ### Lifecycle API commands
 
 ```text
-everest-api> status            # query current module status
+everest-api> status            # query current module status (retained; available after manager exits)
 everest-api> stop              # stop running modules (manager stays alive)
-everest-api> start             # start modules from next-boot slot
+everest-api> start             # start modules from next-boot slot; "Restarting" if modules already running
 everest-api> version           # query manager version
+everest-api> clear-retained-status  # clear the retained status left behind by a killed manager
 ```
+
+<Note>
+  When `start` is called while modules are already running, the reply status is `"Restarting"` (stop + start combined in one operation) rather than `"Starting"`.
+</Note>
 
 ### Raw MQTT (no client library)
 

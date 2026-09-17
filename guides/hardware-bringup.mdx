@@ -1,7 +1,7 @@
 ---
 title: 'Hardware Bringup and Commissioning with EVerest'
 sidebarTitle: 'Hardware Bringup'
-description: 'Commission EV charging hardware with EVerest BringUp modules: verify CP, relays, powermeter, and isolation monitor separately before full stack integration.'
+description: 'Commission EV charging hardware with EVerest BringUp modules: verify CP, relays, powermeter, and isolation monitor before full stack integration.'
 ---
 
 Bringing up charging station hardware is a structured process of verifying each subsystem independently before assembling the complete configuration. EVerest provides a set of **BringUp modules** that let you manually drive individual hardware drivers — board support packages, power supplies, isolation monitors, and power meters — through a split-screen terminal interface. This isolation-first approach catches hardware and firmware bugs before they interact with the full charging stack, and provides a documented checklist for certification evidence.
@@ -131,7 +131,7 @@ The recommended bringup sequence moves from the most fundamental signal (Control
   <Step title="DC Power Supply Bringup">
     Isolate the DC power supply output before applying high voltage.
 
-    Use a bringup config that includes only the `BUPowerSupplyDC` module and your driver (`config-bringup-huawei.yaml`, `config-bringup-uugreen.yaml`, or `config-bringup-api-powersupply.yaml`):
+    Use a bringup config that includes only the `BUPowerSupplyDC` module and your driver (`config-bringup-huawei.yaml`, `config-bringup-uugreen.yaml`, or `config-bringup-api-power-supply-DC.yaml`):
 
     ```bash
     /etc/everest/run_tmux_helper.sh \
@@ -230,7 +230,7 @@ The following example bringup config files are included in the EVerest repositor
 | `config-bringup-isolation-monitor-sil.yaml` | IMD + DC PSU (simulated) |
 | `config-bringup-huawei.yaml` | DC power supply — Huawei R100040Gx |
 | `config-bringup-uugreen.yaml` | DC power supply — UUGreenPower UR1000X0 |
-| `config-bringup-api-powersupply.yaml` | DC power supply via generic API |
+| `config-bringup-api-power-supply-DC.yaml` | DC power supply via generic API |
 | `config-bringup-api-over-voltage-monitor.yaml` | Over-voltage monitor (IEC 61851-23:2023 §6.3.1.106) |
 | `config-bringup-DZG.yaml` | Power meter — DZG GSH01 |
 | `config-bringup-LEM.yaml` | Power meter — LEM DCBM400/600 |

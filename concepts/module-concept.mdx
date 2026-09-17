@@ -95,9 +95,12 @@ metadata:
 | Section | Purpose |
 |---|---|
 | `description` | Human-readable description of what the module does |
-| `config` | Named, typed configuration parameters with optional defaults |
+| `config` | Named, typed module-level configuration parameters with optional defaults and mutability |
 | `provides` | Interface implementations this module exposes to others |
+| `provides.{impl_id}.config` | Optional per-implementation config parameters, settable via `config_implementation` in the run configuration |
 | `requires` | Interface implementations this module needs from others |
+| `requires.{req_id}.min_connections` | Minimum number of connections (0 = optional requirement) |
+| `requires.{req_id}.max_connections` | Maximum number of connections allowed |
 | `enable_external_mqtt` | Set `true` to allow direct MQTT access from module code |
 | `enable_telemetry` | Set `true` to enable telemetry data publication |
 | `enable_global_errors` | Set `true` to subscribe to errors across all modules |
@@ -186,6 +189,16 @@ active_modules:
 
 Each `connections` entry maps a requirement ID from the module's manifest to the instance ID and implementation ID of the module that satisfies it.
 
+If a module declares per-implementation config under `provides.{impl_id}.config` in its manifest, those parameters are set in the run configuration via `config_implementation` rather than `config_module`:
+
+```yaml
+error_history:
+  module: ErrorHistory
+  config_implementation:
+    error_history:                  # implementation ID
+      database_path: /tmp/error_history.db
+```
+
 ## Generated C++ Code Structure
 
 When you run `ev-cli module create` (or `ev-cli generate-headers`) against a manifest, it produces a typed C++ skeleton that directly reflects the manifest structure. The file layout for a module named `PingServerModule` with an implementation `if_impl_id_ping` looks like this:
@@ -196,6 +209,9 @@ modules/
     ├── CMakeLists.txt
     ├── PingServerModule.cpp      # init() and ready() stubs
     ├── PingServerModule.hpp      # module class with config, mqtt, p_*, r_* members
+    ├── doc.rst                   # module documentation entry point
+    ├── docs/
+    │   └── index.rst             # extended module documentation
     └── if_impl_id_ping/
         ├── interface_pingImpl.cpp  # command handler stubs
         └── interface_pingImpl.hpp  # implementation class

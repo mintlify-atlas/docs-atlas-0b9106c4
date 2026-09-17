@@ -1,5 +1,5 @@
 ---
-title: 'Hardware Driver Modules in EVerest'
+title: 'Hardware Driver Modules: BSPs, Meters and Peripherals'
 sidebarTitle: 'Hardware Drivers'
 description: 'Built-in hardware driver modules for BSPs, powermeters, DC power supplies, isolation monitors, NFC/RFID readers, and payment terminals in EVerest.'
 ---
@@ -60,14 +60,18 @@ The `YetiDriver` is the reference BSP for the open-hardware Yeti board designed 
 
 <Accordion title="PhyVersoBSP — Phytec PhyVerso Dual-Connector Controller">
 
-The `PhyVersoBSP` driver targets the Phytec PhyVerso EV charging controller running Pionix MCU firmware. It supports **two independent connectors** from a single module instance, exposing a separate `evse_board_support` implementation for each:
+The `PhyVersoBSP` driver targets the Phytec PhyVerso EV charging controller running Pionix MCU firmware. It supports **two independent connectors** from a single module instance, exposing a separate `evse_board_support`, RCD, and connector-lock implementation for each:
 
 | Provided interface | Description |
 |--------------------|-------------|
 | `connector_1` (`evse_board_support`) | Connector 1 — control pilot, relays, motor lock |
-| `connector_2` (`evse_board_support`) | Connector 2 — same capabilities |
+| `connector_2` (`evse_board_support`) | Connector 2 — control pilot, relays, motor lock |
+| `rcd_1` (`ac_rcd`) | RCD interface for an external RCD-MD on connector 1 |
+| `rcd_2` (`ac_rcd`) | RCD interface for the on-board RCD-MD on connector 2 |
+| `connector_lock_1` (`connector_lock`) | Motor-lock interface for connector 1 |
+| `connector_lock_2` (`connector_lock`) | Motor-lock interface for connector 2 |
 
-Notable config parameters include per-connector import/export current and phase count limits, plus a `dc` boolean to configure a connector for DC mode.
+Notable config parameters include per-connector import/export current and phase count limits, motor lock type (`-1` = no lock, `1` = Hella style, `2` = Valeo potentiometer), optional GPIO stop buttons, and a `dc` boolean to configure a connector for DC mode.
 
 </Accordion>
 
@@ -107,10 +111,33 @@ The `AdAcEvse22KwzKitBSP` driver targets the Analog Devices AD-ACEVSE22KWZ-KIT 2
 
 | Provided interface | Description |
 |--------------------|-------------|
-| `board_support` (`evse_board_support`) | Control pilot, relays |
-| `rcd` (`ac_rcd`) | On-board RCD |
-| `connector_lock` (`connector_lock`) | Motor-lock actuator |
+| `board_support` (`evse_board_support`) | Control pilot, relays, motor lock |
 | `powermeter` (`powermeter`) | Integrated power measurement |
+
+This BSP does not include a built-in RCD or connector-lock interface; if your hardware requires those, connect separate driver modules or use a BSP with integrated RCD/lock support (e.g. `YetiDriver` or `TIDA010939`).
+
+</Accordion>
+
+---
+
+## EV-Side Driver Modules
+
+EV-side driver modules implement the `ev_board_support` interface and are used in EV simulation and testing setups to emulate the in-vehicle side of the charging connection.
+
+<Accordion title="YetiEvDriver — Pionix Yeti EV-side Driver">
+
+The `YetiEvDriver` module implements the EV-side board support interface for the Yeti hardware, enabling it to act as an emulated EV rather than an EVSE. This is used primarily for hardware-in-the-loop testing and development.
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `ev_board_support` (`ev_board_support`) | EV-side control pilot emulation and relay control |
+
+**Key config:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `serial_port` | `/dev/ttyUSB0` | Serial device path |
+| `baud_rate` | `115200` | Communication baud rate |
+| `reset_gpio` | `-1` | GPIO pin for hardware reset (< 0 to disable) |
 
 </Accordion>
 
@@ -238,7 +265,9 @@ Driver for the Bender isoCHA425HV, a widely used DC isolation monitoring device.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `imd_device_id` | `3` | Modbus address of the IMD (0–255) |
-| `r1_prealarm_kohm` | — | Internal pre-alarm resistance threshold in kΩ |
+| `r1_prealarm_kohm` | `250` | Internal pre-alarm isolation resistance threshold in kΩ (maximum 600 kΩ on isoCHA, 500 kΩ on isoEV) |
+| `r2_alarm_kohm` | `100` | Internal alarm isolation resistance threshold in kΩ (must be less than `r1_prealarm_kohm`) |
+| `selftest_enable_at_start` | `true` | Perform IMD self-test on device startup |
 
 The Bender IMD requires multiple seconds to produce a stable isolation reading. Set `cable_check_wait_number_of_imd_measurements` to at least `10` (at 1 Hz sample rate) on the EvseManager config when using this device.
 

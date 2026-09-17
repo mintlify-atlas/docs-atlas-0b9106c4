@@ -103,6 +103,7 @@ inherit useradd
 USERADD_PACKAGES = "${PN}"
 USERADD_PARAM:${PN} = "-u 1500 -d /home/everest -g everest -G systemd-journal,dialout,tty,gpio,tss,mosquitto -r -s /bin/false everest"
 GROUPADD_PARAM:${PN} = "-g 1500 everest; -g 1501 gpio; -r systemd-journal; -r tss"
+GROUPMEMS_PARAM:${PN} = ""
 ```
 
 Specify the user in the EVerest config `settings` section:
