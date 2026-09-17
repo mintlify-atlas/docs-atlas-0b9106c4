@@ -1,0 +1,236 @@
+---
+title: 'Hardware Bringup and Commissioning with EVerest'
+sidebarTitle: 'Hardware Bringup'
+description: 'Commission EV charging hardware with EVerest BringUp modules: verify CP, relays, powermeter, and isolation monitor separately before full stack integration.'
+---
+
+Bringing up charging station hardware is a structured process of verifying each subsystem independently before assembling the complete configuration. EVerest provides a set of **BringUp modules** that let you manually drive individual hardware drivers — board support packages, power supplies, isolation monitors, and power meters — through a split-screen terminal interface. This isolation-first approach catches hardware and firmware bugs before they interact with the full charging stack, and provides a documented checklist for certification evidence.
+
+<Warning>
+  During hardware bringup you will work with high voltages that can cause severe injury including death. All bringup steps involving live electrical connections must only be performed by trained personnel following all relevant safety procedures.
+</Warning>
+
+## What Are BringUp Modules?
+
+BringUp modules are EVerest modules designed for commissioning, not production. Each one presents a manual control UI via a tmux split-screen session, connecting to one or more hardware driver modules. They allow you to send commands (open/close a relay, start measurements, set voltages) and observe feedback events without running the full EVerest charging stack.
+
+The `run_tmux_helper.sh` script launches EVerest in the left pane alongside the BringUp UI panels in the right pane:
+
+```bash
+# On a development host (SIL example)
+./dist/etc/everest/run_tmux_helper.sh \
+    ../config/bringup/config-bringup-isolation-monitor-sil.yaml \
+    ./dist
+
+# On the embedded target (using installed EVerest)
+/etc/everest/run_tmux_helper.sh \
+    /etc/everest/bringup/myconf.yaml \
+    /usr
+```
+
+To exit the tmux session cleanly, press `Ctrl+B` then `d` — the helper script terminates the session and cleans up processes.
+
+<Tip>
+  BringUp modules should be included in development images but removed from production images. In Yocto, control this by including them only in a development image variant.
+</Tip>
+
+An example SIL bringup config that exercises the isolation monitor and DC power supply with simulated drivers:
+
+```yaml
+active_modules:
+  bsp_ui:
+    standalone: true
+    module: BUIsolationMonitor
+    connections:
+      imd:
+        - implementation_id: main
+          module_id: iso_monitor
+  powersupply_ui:
+    connections:
+      psu:
+        - implementation_id: main
+          module_id: powersupply
+    module: BUPowerSupplyDC
+    standalone: true
+  iso_monitor:
+    module: IMDSimulator
+  powersupply:
+    module: DCSupplySimulator
+```
+
+Note the `standalone: true` attribute on both BringUp modules — this tells the manager and tmux helper to launch them in their own terminal pane rather than the main EVerest process.
+
+## Bringup Sequence
+
+The recommended bringup sequence moves from the most fundamental signal (Control Pilot) through to a complete charging session with a real vehicle.
+
+<Steps>
+  <Step title="Basic BSP Bringup: Control Pilot and Relays">
+    The Control Pilot (CP) signal is the foundation of both AC and DC charging. Unstable CP detection is one of the most common causes of broken charging sessions in the field.
+
+    Start the BSP bringup using the config for your board (adapting the BelayBox example):
+
+    ```bash
+    /etc/everest/run_tmux_helper.sh \
+        /etc/everest/bringup/config-bringup-yetidriver.yaml \
+        /usr
+    ```
+
+    Connect an EV simulator and an oscilloscope to the CP line. Work through the checklist:
+
+    - **PWM off / State A**: Verify constant +12 V ± 5% (11.4 V to 12.6 V) on the CP line with ripple below 100 mV VPP.
+    - **PWM State F**: Verify constant −12 V ± 5% (−12.6 V to −11.4 V).
+    - **PWM at 5% duty cycle, State B**: Verify frequency 980–1020 Hz, pulse width 50 µs, rise time below 10 µs, fall time below 13 µs.
+    - **State C**: Verify rise time below 7 µs, fall time below 13 µs.
+    - **Diode failure detection**: Short the EV-side diode and verify the BSP reports `DiodeFault`.
+    - **State stability**: Confirm correct detection at minimum and maximum resistor values for states B (1870–4610 Ω) and C (909–1723 Ω).
+
+    For **relays**, verify:
+
+    - Relay closes after `Allow power on` command with CP in state C, within ~300 ms.
+    - Relay opens within 50 ms of `Force power off`.
+    - Relay opens within 100 ms when CP transitions from state C to state B.
+    - No double PowerOn/PowerOff events (relay bounce).
+    - `Power on/off` events are reported on every state change, regardless of cause.
+
+    For **Proximity Pilot (PP)** (Type 2 socket only), verify correct ampacity detection across the resistor range for each cable rating:
+
+    | Cable ampacity | Min R | Nominal R | Max R |
+    |---|---|---|---|
+    | 13 A | 1100 Ω | 1500 Ω | 2460 Ω |
+    | 20 A | 400 Ω | 680 Ω | 936 Ω |
+    | 32 A | 164 Ω | 220 Ω | 308 Ω |
+    | 63 A / 70 A | 80 Ω | 100 Ω | 140 Ω |
+  </Step>
+
+  <Step title="Powermeter Bringup">
+    Write a bringup config for your specific power meter (adapt from `config-bringup-DZG.yaml` or `config-bringup-LEM.yaml`):
+
+    ```bash
+    /etc/everest/run_tmux_helper.sh \
+        /etc/everest/bringup/config-bringup-mypowermeter.yaml \
+        /usr
+    ```
+
+    Verify the following:
+
+    - Measurements arrive regularly (at least once per second).
+    - Imported energy in Wh and timestamp are reported correctly — these are the only mandatory values.
+    - For bidirectional metering, verify exported energy values as well.
+    - If the meter supports German Eichrecht (e.g. LEM DCBM400/600 or DZG GSH01), click `Start Transaction` and verify the response time is below a few seconds. Click `Stop Transaction` and verify the signed meter value response.
+    - Apply a test load and verify the energy flow direction is correct (a common mistake is swapping meter input and output).
+  </Step>
+
+  <Step title="AC RCD and Connector Lock Bringup">
+    After CP and PP are verified, test the AC-specific components using the same BSP bringup config:
+
+    - **RCD**: Connect an RCD test device and verify it triggers on both AC and DC fault currents within the required time and level for your region.
+    - **Connector lock** (required for socket-outlet AC chargers): Command lock and unlock via the BSP driver and verify mechanical operation.
+  </Step>
+
+  <Step title="DC Power Supply Bringup">
+    Isolate the DC power supply output before applying high voltage.
+
+    Use a bringup config that includes only the `BUPowerSupplyDC` module and your driver (`config-bringup-huawei.yaml`, `config-bringup-uugreen.yaml`, or `config-bringup-api-powersupply.yaml`):
+
+    ```bash
+    /etc/everest/run_tmux_helper.sh \
+        /etc/everest/bringup/config-bringup-mypowersupply.yaml \
+        /usr
+    ```
+
+    Checklist:
+
+    - Reported capabilities match manufacturer specifications.
+    - Output voltage reaches the set point within 6 seconds after enabling export mode.
+    - Voltage accuracy: ±10 V; current accuracy: ±1.5% or ±0.5 A (per IEC 61851-1:2023 CC.6.3).
+    - No overshoot when switching from minimum to maximum output voltage.
+    - Measured output voltage is correctly reported back to EVerest.
+    - Measurements arrive at least once per second.
+    - Power supply switches off within ~10–20 seconds after EVerest stops communicating with it.
+  </Step>
+
+  <Step title="Isolation Monitor Bringup">
+    Use the `BUIsolationMonitor` module to verify the IMD:
+
+    ```bash
+    /etc/everest/run_tmux_helper.sh \
+        /etc/everest/bringup/config-bringup-isolation-monitor-sil.yaml \
+        /usr
+    ```
+
+    Verify:
+
+    - At 500 V output, the IMD reports the correct bus voltage.
+    - New measurements arrive regularly (at least once per second).
+    - Baseline resistance reads very high (≥1 MΩ).
+    - Connecting a 100 kΩ resistor from DC− to PE is detected within the timeframe specified in the datasheet (e.g. ≤10 s for Bender).
+    - IMD self-test completes within ~10 s (long self-test times can cause `CableCheck` timeouts with some EVs).
+    - Stopping measurements halts new values.
+  </Step>
+
+  <Step title="First AC Charging Session with a Real Car">
+    Assemble a minimal AC config (BSP driver + power meter) with `disable_authentication: true` in `EvseManager` and start EVerest manually:
+
+    ```bash
+    systemctl stop everest
+    manager /path/to/simple_ac_config.yaml
+    ```
+
+    Wait for `Ready to start charging` in the logs, then simulate charging by setting the EV simulator to state B, waiting for PWM, then switching to state C. The relay should close.
+
+    Test pause/resume (state C → B → C), unplug (state A), and grid-loss recovery (stop EVerest with EV in state B, restart — PWM should re-enable and relay should close on state C).
+
+    Once basic charging works with the simulator, connect a real EV and repeat all test scenarios.
+  </Step>
+
+  <Step title="ISO 15118 HLC Bringup (AC)">
+    Extend the working AC config by adding the ISO 15118 stack and SLAC module. Most cars implement ISO 15118 for AC only selectively — refer to the [EVerest logfiles repository](https://github.com/EVerest/logfiles) for compatibility information.
+
+    Start EVerest with the extended config and connect a real car. Monitor the ISO 15118 traffic to confirm the full HLC handshake completes.
+  </Step>
+
+  <Step title="DC Charging Milestones">
+    Work through three milestones with the full DC configuration:
+
+    1. **Zero-power charging**: Disconnect the DC+ wire from the cable. Plug in an EV and verify the session progresses through `CableCheck` and `PreCharge` (EV stops at PreCharge because it cannot see voltage). Verify the power supply voltage in PreCharge is within ±20 V of the EV battery voltage.
+
+    2. **Limited-power charging**: Insert a 5 kΩ resistor in the DC+ wire. Verify the session reaches `CurrentDemand`. Verify all ISO 15118 messages are correct.
+
+    3. **Full-power charging**: Remove the resistor. Verify the EV receives the requested current, the in-vehicle display reflects it, and the AC input is not overloaded.
+  </Step>
+</Steps>
+
+## Logging and Diagnostics
+
+During bringup, the following tools are particularly useful:
+
+<CardGroup cols={2}>
+  <Card title="MQTT Explorer" icon="chart-network">
+    Connect to `localhost:1883` to observe all inter-module messages in real time. Subscribe to `everest/#` to see every command, response, and variable publication.
+  </Card>
+  <Card title="tmux Logging" icon="terminal">
+    The `run_tmux_helper.sh` script keeps all module output in the left pane. Use `tmux pipe-pane -o 'cat >> /tmp/bringup.log'` to capture the full session to a file.
+  </Card>
+  <Card title="Oscilloscope on CP" icon="wave-square">
+    Always attach a scope during CP bringup. The timing requirements for state detection (50 µs pulse, 10 µs rise time) cannot be verified by software alone.
+  </Card>
+  <Card title="Wireshark on PLC Interface" icon="magnifying-glass">
+    For ISO 15118 debugging, run Wireshark on the PLC interface (e.g. `seth0`) and decode V2G traffic. EVerest's debug guide covers the filter expressions for each phase.
+  </Card>
+</CardGroup>
+
+## Available BringUp Module Configs
+
+The following example bringup config files are included in the EVerest repository:
+
+| Config file | Purpose |
+|---|---|
+| `config-bringup-yetidriver.yaml` | BSP (CP, PP, relays) using the Yeti/BelayBox driver |
+| `config-bringup-isolation-monitor-sil.yaml` | IMD + DC PSU (simulated) |
+| `config-bringup-huawei.yaml` | DC power supply — Huawei R100040Gx |
+| `config-bringup-uugreen.yaml` | DC power supply — UUGreenPower UR1000X0 |
+| `config-bringup-api-powersupply.yaml` | DC power supply via generic API |
+| `config-bringup-api-over-voltage-monitor.yaml` | Over-voltage monitor (IEC 61851-23:2023 §6.3.1.106) |
+| `config-bringup-DZG.yaml` | Power meter — DZG GSH01 |
+| `config-bringup-LEM.yaml` | Power meter — LEM DCBM400/600 |

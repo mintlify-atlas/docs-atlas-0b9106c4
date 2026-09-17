@@ -1,0 +1,124 @@
+{
+  "projectType": "framework",
+  "projectName": "EVerest",
+  "projectDescription": "EVerest is an open-source, modular firmware framework for EV charging stations, providing a full software stack with support for AC/DC charging, OCPP 1.6/2.0.1/2.1, ISO 15118, energy management, and hardware drivers for charge controllers, powermeters, and more.",
+  "theme": "aspen",
+  "primaryColor": "#0071bc",
+  "lightColor": "#bbf31c",
+  "darkColor": "#1c3f75",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "quickstart-hardware"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/module-concept",
+              "concepts/interfaces-and-types",
+              "concepts/configuration",
+              "concepts/error-framework",
+              "concepts/energy-management"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/develop-a-module",
+              "guides/ocpp",
+              "guides/plug-and-charge",
+              "guides/security-best-practices",
+              "guides/hardware-bringup",
+              "guides/yocto-embedded"
+            ]
+          },
+          {
+            "group": "Project",
+            "pages": [
+              "project/community",
+              "project/contributing",
+              "project/releases-and-versioning"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Manager & Configuration",
+            "pages": [
+              "reference/manager-cli",
+              "reference/config-yaml-format",
+              "reference/management-apis"
+            ]
+          },
+          {
+            "group": "APIs",
+            "pages": [
+              "reference/everest-api",
+              "reference/rpc-api"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "reference/modules/evse-manager",
+              "reference/modules/ocpp",
+              "reference/modules/auth",
+              "reference/modules/energy-manager",
+              "reference/modules/hardware-drivers"
+            ]
+          },
+          {
+            "group": "Developer Tools",
+            "pages": [
+              "reference/tools/ev-cli",
+              "reference/tools/management-api-cli"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Modular microservice-like architecture with MQTT-based inter-module communication",
+    "Full OCPP support: OCPP 1.6, 2.0.1, and 2.1 via a single combined module",
+    "ISO 15118-2, -3, -20 (Plug & Charge, V2G) and IEC 61851 / DIN SPEC 70121 support",
+    "AC and DC charging with multi-EVSE configurations",
+    "Ready-to-use hardware drivers for BSPs, powermeters, isolation monitors, RFID/NFC readers, DC power supplies",
+    "Integrated energy management and local energy APIs",
+    "Stable external APIs over MQTT (EVerestAPI) and JSON-RPC (RpcApi)",
+    "Configuration and Lifecycle management APIs for remote runtime management",
+    "Yocto support for embedded Linux images with OTA update capability",
+    "Developer tooling: ev-cli code generation, devcontainer, simulation-in-the-loop (SIL) configs",
+    "Security best practices: TPM, OpenSSF, ISO/IEC 5230 license compliance",
+    "Modules can be written in C++, Python, JavaScript, or Rust"
+  ],
+  "publicApiSurface": [
+    "manager --config / --db / --check / --standalone / --ignore / --into-idle / --recover-module-crashes",
+    "Configuration API (MQTT) — list/get/set/create/delete configuration slots at runtime",
+    "Lifecycle API (MQTT) — start/stop/restart module instances at runtime",
+    "EVerestAPI (MQTT / AsyncAPI 3.0) — evse_manager_consumer_API, auth_consumer_API, powermeter_API, ocpp_consumer_API, power_supply_DC_API, etc.",
+    "RpcApi (JSON-RPC over WebSocket) — charging session data and parameter control",
+    "ev-cli module / interface / types / helpers subcommands",
+    "everest-management-api-cli lifecycle and configuration client",
+    "Module interface: Commands (CMDs) and Variables (VARs) via MQTT",
+    "EvseManager module — evse_manager interface, IEC 61851 state machine, energy transfer modes",
+    "OCPPmulti module — Mode: Only1.6 / Only2 / Auto configuration",
+    "Auth module — token provider / validator interfaces",
+    "EnergyManager module — energy, external_energy_limits interfaces",
+    "SLAC module — EV / EVSE SLAC (ISO 15118-3) interface",
+    "EvseV2G / IsoMux / Evse15118D20 modules — ISO 15118-2/20 stack",
+    "EvseSecurity module — certificate management (evse_security interface)"
+  ]
+}

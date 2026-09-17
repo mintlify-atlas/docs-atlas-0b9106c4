@@ -1,0 +1,193 @@
+---
+title: 'EVerest Configuration: YAML Files and Runtime API'
+sidebarTitle: 'Configuration'
+description: 'EVerest YAML configs declare module instances, config values, and connections. The Configuration API enables slot-based runtime management over MQTT.'
+---
+
+Every EVerest deployment is driven by a run configuration — a YAML file that declares which module instances to start, what configuration values to give them, and how to wire their interface requirements to providers. The EVerest manager process reads this configuration on startup, seeds its internal Configuration Service database, and distributes the relevant portions to each module as it starts. Beyond this initial YAML-based flow, EVerest also provides a runtime Configuration API over MQTT that allows external applications to read and write configuration values, manage multiple configuration slots, and request module restarts — all without restarting the manager process itself.
+
+## YAML Configuration File Structure
+
+A run configuration file has two mandatory top-level keys: `settings` for manager-wide options and `active_modules` for the list of module instances to start.
+
+```yaml
+settings:
+  telemetry_enabled: true
+
+active_modules:
+
+  energy_manager:
+    module: EnergyManager           # module name (maps to modules/EnergyManagement/EnergyManager)
+    config_module:                  # module-level config parameters
+      schedule_interval_duration: 60
+      schedule_total_duration: 10
+      debug: false
+      switch_3ph1ph_while_charging_mode: Both
+      switch_3ph1ph_max_nr_of_switches_per_session: 5
+      switch_3ph1ph_time_hysteresis_s: 20
+      switch_3ph1ph_power_hysteresis_W: 1000
+    connections:                    # interface requirement → provider wiring
+      energy_trunk:
+        - implementation_id: energy_grid
+          module_id: grid_connection_point
+
+  grid_connection_point:
+    module: EnergyNode
+    config_module:
+      fuse_limit_A: 40
+      phase_count: 3
+    connections:
+      energy_consumer:
+        - implementation_id: energy_grid
+          module_id: connector_1
+
+  connector_1:
+    module: EvseManager
+    config_module:
+      connector_id: 1
+      charge_mode: AC
+      ac_hlc_enabled: true
+      ac_hlc_use_5percent: false
+      ac_nominal_voltage: 230
+      evse_id: DE*PNX*E12345*1
+      session_logging: true
+      session_logging_path: /tmp/everest-logs
+    connections:
+      bsp:
+        - implementation_id: board_support
+          module_id: connector_1_powerpath
+      hlc:
+        - implementation_id: charger
+          module_id: iso15118_charger
+      powermeter_grid_side:
+        - implementation_id: powermeter
+          module_id: connector_1_powerpath
+      slac:
+        - implementation_id: evse
+          module_id: slac
+    telemetry:
+      id: 1
+```
+
+<Accordion title="Configuration field reference">
+
+| Field | Description |
+|---|---|
+| `active_modules` | Map of instance IDs to module instance declarations |
+| `{instance_id}.module` | The module name to instantiate |
+| `{instance_id}.config_module` | Key-value config parameters for the module class |
+| `{instance_id}.config_implementation` | Per-implementation config (keyed by implementation ID) |
+| `{instance_id}.connections` | Maps requirement IDs to `[{module_id, implementation_id}]` provider lists |
+| `{instance_id}.mapping` | Optional 3-tier mapping (`evse`, `connector` integers) |
+| `{instance_id}.telemetry` | Optional telemetry ID for this instance |
+
+</Accordion>
+
+## User Config Override
+
+EVerest supports a layered configuration model. A `user-config/{config-name}.yaml` file is automatically merged on top of the base configuration when the manager starts without `--db`. This allows runtime modifications — for example, changing RFID token settings or EVSE IDs — to persist across restarts without modifying the base YAML file.
+
+## Manager Command-Line Flags
+
+The manager exposes several flags that control how the configuration is loaded and persisted.
+
+<Tabs>
+  <Tab title="Basic YAML Mode">
+    The simplest mode: the YAML file is the only source of configuration. An in-memory database is seeded fresh on every start. Runtime writes go to the `user-config` YAML mirror.
+
+    ```bash
+    ./manager --config my_config.yaml
+    ```
+  </Tab>
+  <Tab title="Database-Backed Mode">
+    A SQLite database file acts as the persistent configuration store. The YAML is used to seed the database on first run or when no valid configuration slot exists.
+
+    ```bash
+    ./manager --config my_config.yaml --db everest.db
+    ```
+  </Tab>
+  <Tab title="Force YAML Reset">
+    Discards the existing database slot and re-seeds from the YAML file. Useful during development when you want to return to a known YAML baseline.
+
+    ```bash
+    # --reset-from-yaml is experimental
+    ./manager --config my_config.yaml --db everest.db --reset-from-yaml
+    ```
+  </Tab>
+  <Tab title="Idle Start">
+    Starts the manager without launching any modules, making the Configuration API and Lifecycle API available immediately. Use this when you want to push a configuration before starting modules.
+
+    ```bash
+    # --into-idle is experimental
+    ./manager --into-idle
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  The flags `--reset-from-yaml`, `--into-idle`, and `--idle-on-failure` are experimental and exempt from EVerest stability guarantees. They may change or be removed in any future release. The manager logs a warning at startup when any of these flags is used.
+</Warning>
+
+## Configuration Slots
+
+A **configuration slot** is a complete, named snapshot of an EVerest configuration: the set of active modules, their parameters, and their interface connections. The Configuration Service database can hold multiple slots side by side. Exactly one slot is the **active** slot — the one from which the currently running modules were started.
+
+<Steps>
+  <Step title="Create a new slot">
+    Upload a new YAML configuration via the Configuration API. This creates a new slot in the database without affecting the running modules.
+  </Step>
+  <Step title="Mark the slot active">
+    Use the Configuration API to mark the new slot as the next boot slot. This records the intent but does not immediately stop or restart any module.
+  </Step>
+  <Step title="Restart modules">
+    Request a module restart via the Lifecycle API. The manager drains all module processes, reloads the now-active slot, and starts the modules again. The Configuration API remains available throughout.
+  </Step>
+</Steps>
+
+<Note>
+  Configuration slots are unrelated to OCPP network configuration slots (CSMS connection profiles). The names coincide by convention but refer to entirely different concepts.
+</Note>
+
+## Configuration API vs. EVerest Internal API
+
+EVerest uses two separate MQTT-based communication paths for configuration:
+
+<CardGroup cols={2}>
+  <Card title="Configuration API" icon="cloud">
+    A stable, public Async API (AsyncAPI 3.0) exposed by the manager. Used exclusively by **external applications** such as cloud backends, management dashboards, or setup tools. Supports reading, writing, slot management, and change notifications.
+  </Card>
+  <Card title="EVerest Internal API" icon="microchip">
+    An internal MQTT protocol between the **manager and EVerest modules**. Modules use this to request their own configuration at startup and to apply or veto runtime parameter changes. Never used by external applications.
+  </Card>
+</CardGroup>
+
+## Runtime Configuration Changes
+
+Configuration parameters can be changed at runtime without restarting modules, subject to the parameter's `mutability` setting:
+
+| Mutability | Behavior |
+|---|---|
+| `ReadWrite` | Change is persisted and delivered to the running module immediately |
+| `ReadOnly` | Change is persisted but only takes effect after the next module restart |
+| `WriteOnly` | Accepted and persisted; module may or may not apply it immediately |
+
+When a write targets the active slot and the module is running, the Configuration Service delivers the change to the module and waits for the module's verdict:
+
+- **`Applied`** — the module accepted and applied the change immediately
+- **`WillApplyOnRestart`** — the module requires a restart to apply the change
+- **`Rejected`** — the module rejected the runtime change; the value is still persisted and will be loaded on the next restart
+
+Writes to an **inactive** slot are always persisted directly to the database and take effect when that slot is activated and modules are restarted.
+
+<Note>
+  Writes targeting the active slot are refused while modules are in a transient state (starting, stopping, or mid-restart). The API returns `ModulesInTransientState` in these cases. Retry the write once the system returns to `Running`.
+</Note>
+
+## What the Configuration API Cannot Do
+
+The Configuration API handles parameter changes and slot management, but it does not support structural changes to a configuration. The following operations require uploading a new YAML configuration that contains the desired structure:
+
+- Adding a new module instance
+- Removing a module instance
+- Renaming a module instance
+- Changing interface connections between module instances

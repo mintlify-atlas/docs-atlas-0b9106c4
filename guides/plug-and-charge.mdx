@@ -1,0 +1,210 @@
+---
+title: 'Set Up Plug & Charge (ISO 15118) in EVerest'
+sidebarTitle: 'Plug & Charge'
+description: 'Configure ISO 15118 Plug & Charge in EVerest: required modules, PKI infrastructure, the step-by-step authorization flow, and a SIL simulation walkthrough.'
+---
+
+Plug & Charge (PnC) allows an electric vehicle to authorize a charging session automatically using a contract certificate embedded in the vehicle — no RFID card or app required. EVerest implements PnC for both ISO 15118-2 and ISO 15118-20, supporting OCPP 1.6J (via the Security and PnC whitepapers) and OCPP 2.0.1/2.1. The Software-in-the-Loop (SIL) environment lets you validate the full end-to-end flow before deploying to hardware.
+
+## Required Modules
+
+A Plug & Charge deployment in EVerest requires the following modules to be loaded and connected:
+
+| Module | Role |
+|---|---|
+| `EvseManager` | EVSE control logic; provides the `token_provider` interface carrying the contract certificate |
+| `EvseV2G` (or `Evse15118D20`) | ISO 15118 stack; sets up the TLS server and extracts the contract from the EV |
+| `EvseSecurity` | Certificate and key management; serves SECC leaf certs and validates contract chains |
+| `OCPPmulti` | CSMS connectivity; acts as the `token_validator` to authorize the contract token |
+| `Auth` | Orchestrates the authorization pipeline between token providers and validators |
+
+<Note>
+  The `EvseV2G` module covers ISO 15118-2 and DIN SPEC 70121. For ISO 15118-20 (OCPP 2.1 environments), use `Evse15118D20` with `libiso15118`.
+</Note>
+
+## Certificate Infrastructure Overview
+
+Before a Plug & Charge session can start, several certificates must be installed on the charging station. These can be provisioned during manufacturing or pushed by the CSMS via OCPP.
+
+```text
+V2G Root CA
+  └── V2G Sub-CA 1
+        └── V2G Sub-CA 2
+              └── SECC Leaf Certificate  ← installed on the charger
+                    (+ SECC private key)
+
+MO Root CA  ← optional; needed for local contract validation
+  └── MO Sub-CA
+        └── Contract Certificate        ← installed in the EV
+```
+
+The `EvseSecurity` module manages all certificate storage and exposes the `evse_security` interface used by both `EvseV2G` and `OCPPmulti`. Configure the storage paths in the EvseSecurity module manifest. When PnC is enabled and no valid SECC leaf certificate exists (or one expires within 30 days), the charging station automatically requests a new certificate from the CSMS via `SignCertificate.req`.
+
+<Warning>
+  The PKI scripts bundled with EVerest generate **test certificates only**. They must not be used in production. For production, obtain certificates from a qualified V2G PKI provider.
+</Warning>
+
+## Steps: Run PnC Simulation
+
+<Steps>
+  <Step title="Install Prerequisites">
+    EVerest's SIL uses the Josev ISO 15118 stack. Install the Python requirements and generate the test PKI:
+
+    ```bash
+    # Install Josev requirements
+    cd {EVerest Workspace Directory}/Josev
+    python3 -m pip install -r requirements.txt
+
+    # Generate ISO 15118-2 test PKI and CA certificates
+    cd {EVerest Workspace Directory}/Josev/iso15118/shared/pki
+    ./create_certs.sh -v iso-2 -i {EVerest Workspace Directory}/EVerest
+    ```
+
+    This installs CA certificates under `config/certs/ca` and client certificates, private keys, and password files under `config/certs/client`.
+  </Step>
+
+  <Step title="Start the CSMS">
+    EVerest provides a [simple open-source CSMS](https://github.com/EVerest/ocpp-csms) that responds positively to all OCPP messages including certificate installation requests. Follow its README to start it locally on `localhost:9000`.
+  </Step>
+
+  <Step title="Run EVerest with PnC Enabled">
+    Use the pre-built PnC SIL run scripts. For OCPP 2.x (recommended):
+
+    ```bash
+    ./run-scripts/run-sil-ocpp201-pnc.sh
+    ```
+
+    For OCPP 1.6:
+
+    ```bash
+    ./run-scripts/run-sil-ocpp-pnc.sh
+    ```
+
+    Both scripts load `OCPPmulti` with PnC flags pre-configured and connect to `localhost:9000`.
+  </Step>
+
+  <Step title="Trigger a PnC Session via Node-RED">
+    The SIL environment includes a Node-RED simulation dashboard. Navigate to `localhost:1880/ui`, select **AC ISO 15118-2** from the Car Simulation dropdown, and click **Car Plugin**. This initiates the EV plugin sequence and starts the full Plug & Charge flow including a `CertificateInstallation` request to install a virtual contract certificate in the simulated EV.
+  </Step>
+
+  <Step title="Inspect the Logs">
+    Monitor the EVerest console output and OCPP message logs:
+
+    ```bash
+    # OCPP logs (HTML + JSON + security formats)
+    ls /tmp/everest_ocpp_logs/
+    ```
+
+    A successful PnC authorization shows the full flow from ISO 15118 handshake through OCPP `Authorize.req` to session start.
+  </Step>
+</Steps>
+
+## Troubleshooting SDP Timeout
+
+If you see SDP request timeouts in the EV simulator logs:
+
+```text
+[WARN] iso15118_car :: A TimeoutError occurred. Waited for Timeouts.SDP_REQ s after sending an SDPRequest
+```
+
+Allow UDP port 15118 on your loopback or relevant interface:
+
+```bash
+sudo ip6tables -I INPUT -i <your_network_interface_name> -p udp --dport 15118 -j ACCEPT
+```
+
+## EVerest Module Configuration for PnC
+
+### EvseManager
+
+Enable ISO 15118 High-Level Communication and contract payment:
+
+```yaml
+EvseManager:
+  config_implementation:
+    main:
+      ac_hlc_enabled: true
+      payment_enable_contract: true
+```
+
+### EvseV2G
+
+Enable TLS and contract certificate chain verification:
+
+```yaml
+EvseV2G:
+  config_implementation:
+    main:
+      tls_security: allow       # or "force" to require TLS
+      verify_contract_cert_chain: true
+```
+
+### Auth
+
+Connect `EvseManager` as a `token_provider` so the contract certificate reaches the Auth module, and set `OCPPmulti` as the sole `token_validator`:
+
+```yaml
+Auth:
+  connections:
+    token_provider:
+      - module_id: evse_manager
+        implementation_id: token_provider
+    token_validator:
+      - module_id: ocpp
+        implementation_id: auth_validator
+```
+
+### OCPP Configuration Keys
+
+These OCPP parameters control the PnC process (applicable to both OCPP 1.6 via OCPPmulti and OCPP 2.x):
+
+<Accordion title="OCPP 1.6 PnC configuration keys">
+
+| Key | Type | Description |
+|---|---|---|
+| `ISO15118PnCEnabled` | bool | Enable authorization using contract certificates |
+| `ISO15118CertificateManagementEnabled` | bool | Enable certificate management via DataTransfer (OCPP 1.6 only) |
+| `CentralContractValidationAllowed` | bool | Allow CSMS to validate contracts when local validation is unavailable |
+| `ContractValidationOffline` | bool | Allow offline contract validation via auth cache or local list |
+
+</Accordion>
+
+<Accordion title="OCPP 2.x PnC configuration keys">
+
+| Key | Type | Description |
+|---|---|---|
+| `ISO15118PnCEnabled` | bool | Enable authorization using contract certificates |
+| `CentralContractValidationAllowed` | bool | Allow CSMS to validate contracts remotely |
+| `ContractValidationOffline` | bool | Allow offline contract validation |
+| `ISO15118Ctrlr::V2GCertificateInstallationEnabled` | bool | Allow CSMS to install SECC leaf certificates |
+| `ISO15118Ctrlr::ContractCertificateInstallationEnabled` | bool | Allow contract certificate installation/update in the EV |
+| `ISO15118Ctrlr::SeccId` | string | Subject Common Name for SECC CSR |
+| `ISO15118Ctrlr::CountryName` | string | Subject Country for SECC CSR |
+| `ISO15118Ctrlr::OrganizationName` | string | Subject Organization for SECC CSR |
+
+</Accordion>
+
+## PnC Authorization Flow
+
+Understanding the step-by-step authorization flow helps diagnose integration issues. The following describes what happens after the EV plugs in and selects the Contract payment option:
+
+<Steps>
+  <Step title="Step 0: Certificate Provisioning">
+    Before any physical connection, the V2G Root certificate, SECC Leaf certificate and private key, and optionally MO Root certificates are installed on the charger via OCPP or manual provisioning. The `EvseSecurity` module manages all storage.
+  </Step>
+  <Step title="Step 1: TLS Handshake (EvseV2G)">
+    On physical connection, `EvseV2G` retrieves the SECC leaf certificate chain and private key from `EvseSecurity` and establishes a TLS server. The EV connects as the TLS client.
+  </Step>
+  <Step title="Step 2: Contract Certificate Extraction (EvseV2G)">
+    When the EV selects Contract as the payment option, it sends its contract certificate chain. `EvseV2G` generates a `ProvidedIdToken` containing the contract certificate and OCSP request data.
+  </Step>
+  <Step title="Step 3: Token Routing (EvseManager → Auth)">
+    The `ProvidedIdToken` travels through `EvseManager`'s `token_provider` interface to the central `Auth` module.
+  </Step>
+  <Step title="Step 4: OCPP Validation (Auth → OCPPmulti)">
+    `Auth` sends the token to `OCPPmulti` (the registered `token_validator`). OCPPmulti validates it locally (against MO root certificates if installed) or forwards an `Authorize.req` to the CSMS.
+  </Step>
+  <Step title="Step 5: Session Authorization (Auth → EvseManager → EvseV2G)">
+    On successful validation, `Auth` authorizes the `EvseManager`, which in turn notifies `EvseV2G`. `EvseV2G` sends the ISO 15118 authorization response to the EV and the charging session starts.
+  </Step>
+</Steps>

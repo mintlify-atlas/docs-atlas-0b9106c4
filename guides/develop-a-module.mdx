@@ -1,0 +1,315 @@
+---
+title: 'Develop a Custom EVerest Module from Scratch'
+sidebarTitle: 'Develop a Module'
+description: 'Build a new EVerest module with ev-cli: define interfaces in YAML, write a manifest, generate C++ stubs, implement commands, and run inside the manager.'
+---
+
+EVerest's microservice-like architecture means every capability — from CP signaling to OCPP communication — lives inside a discrete **module**. Modules communicate over MQTT using typed interfaces, and the EVerest manager orchestrates their lifecycle. This guide walks through creating a minimal module from first principles: defining an interface, writing a manifest, generating C++ boilerplate with `ev-cli`, implementing your logic, and running it inside the EVerest manager.
+
+## Prerequisites
+
+Before starting, confirm that the following are in place:
+
+- `ev-cli` is installed and reachable (`ev-cli --version`)
+- An EVerest workspace exists with `EVerest/` and `everest-cmake/` cloned (see the Quick Start Guide)
+- A running MQTT broker on `localhost:1883` (e.g. a Mosquitto container)
+
+```bash
+# Verify ev-cli is available
+ev-cli --version
+
+# Export the workspace path used throughout this guide
+export EVEREST_WORKSPACE=~/ev-workspace
+```
+
+<Note>
+  Python, Rust, and JavaScript module support also exists in EVerest. This guide focuses on C++ modules, which are the most common. The manifest and interface YAML formats are identical across all language targets.
+</Note>
+
+## Steps
+
+<Steps>
+  <Step title="Create a Module Workspace">
+    Clone the official `everest-template` repository as your module's starting point. This provides pre-configured `.clang-format` and `.eslintrc.json` files.
+
+    ```bash
+    export EVEREST_TUTORIAL_DIR=~/everest-tutorial-module
+    git clone https://github.com/EVerest/everest-template.git $EVEREST_TUTORIAL_DIR
+    cd $EVEREST_TUTORIAL_DIR
+    ```
+
+    Also add a `dependencies.yaml` at the project root so the EVerest dependency manager (EDM) can locate `EVerest`:
+
+    ```yaml
+    ---
+    EVerest:
+      git: https://github.com/EVerest/EVerest.git
+      git_tag: main
+    ```
+  </Step>
+
+  <Step title="Define an Interface in YAML">
+    Each EVerest interface describes the **commands** a module can receive and the **variables** it can publish. Create the interfaces directory and define a minimal interface:
+
+    ```bash
+    mkdir -p $EVEREST_TUTORIAL_DIR/interfaces
+    ```
+
+    **`interfaces/interface_tutorial_module.yaml`**
+
+    ```yaml
+    description: The interface of the tutorial module.
+    cmds:
+      command_tutorial:
+        description: A command the tutorial module's interface provides. It receives a simple string.
+        arguments:
+          payload:
+            description: An arbitrary string that can be sent to the module.
+            type: string
+        result:
+          description: The answer of the module (which per default will just be "everest").
+          type: string
+    ```
+
+    Generate the C++ header files for this interface using `ev-cli`:
+
+    ```bash
+    cd $EVEREST_TUTORIAL_DIR && ev-cli interface generate-headers \
+      --everest-dir . \
+      --schemas-dir $EVEREST_WORKSPACE/EVerest/lib/everest/framework/schemas \
+      interface_tutorial_module
+    ```
+
+    After running this command you will find typed `Implementation.hpp`, `Interface.hpp`, and `Types.hpp` headers under `build/generated/include/generated/interfaces/interface_tutorial_module/`.
+  </Step>
+
+  <Step title="Create a Module Manifest">
+    The manifest describes the module's configuration parameters, the interfaces it provides (implements), and the interfaces it requires (depends on). Create the module directory and manifest:
+
+    ```bash
+    mkdir -p $EVEREST_TUTORIAL_DIR/modules/TutorialModule
+    ```
+
+    **`modules/TutorialModule/manifest.yaml`**
+
+    ```yaml
+    description: The EVerest Tutorial Module
+    config:
+      config_tutorial_switch:
+        description: A boolean configuration parameter.
+        type: boolean
+        default: false
+    provides:
+      interface_impl_tutorial_module:
+        interface: interface_tutorial_module
+        description: An actual implementation in your module of "interface_tutorial_module" interface.
+    metadata:
+      license: https://opensource.org/licenses/Apache-2.0
+      authors:
+        - <Your Name>, <Your Organization>
+    ```
+
+    The manifest declares one boolean configuration key (`config_tutorial_switch`) and one interface implementation named `interface_impl_tutorial_module`.
+  </Step>
+
+  <Step title="Generate C++ Stubs with ev-cli">
+    Use `ev-cli module create` to generate the full C++ scaffolding from your manifest:
+
+    ```bash
+    cd $EVEREST_TUTORIAL_DIR && ev-cli module create \
+      --everest-dir . \
+      --schemas-dir $EVEREST_WORKSPACE/EVerest/lib/everest/framework/schemas \
+      TutorialModule \
+      --licenses $EVEREST_WORKSPACE/EVerest/applications/utils/ev-dev-tools/src/ev_cli/licenses
+    ```
+
+    The generated file tree looks like:
+
+    ```
+    modules/TutorialModule/
+    ├── CMakeLists.txt
+    ├── TutorialModule.cpp
+    ├── TutorialModule.hpp
+    ├── doc.rst
+    ├── docs/
+    │   └── index.rst
+    ├── interface_impl_tutorial_module/
+    │   ├── interface_tutorial_moduleImpl.cpp
+    │   └── interface_tutorial_moduleImpl.hpp
+    └── manifest.yaml
+    ```
+
+    `TutorialModule.cpp` / `.hpp` contain the EVerest lifecycle callbacks (`init` and `ready`). The `interface_impl_tutorial_module/` subdirectory holds the generated implementation stubs for your interface.
+  </Step>
+
+  <Step title="Implement Commands and Variable Publishing">
+    Open `modules/TutorialModule/interface_impl_tutorial_module/interface_tutorial_moduleImpl.cpp`. The generated stub for `handle_command_tutorial` already returns the expected result:
+
+    ```cpp
+    std::string interface_tutorial_moduleImpl::handle_command_tutorial(std::string& payload) {
+        // your code for cmd command_tutorial goes here
+        return "everest";
+    }
+    ```
+
+    Replace the body with your real logic. To publish a variable, call `publish_<variable_name>(value)` from within the implementation class — generated helpers are declared in the matching `.hpp` file.
+  </Step>
+
+  <Step title="Add to CMakeLists.txt">
+    Create two CMake files. First, the project-level `CMakeLists.txt` in `$EVEREST_TUTORIAL_DIR/`:
+
+    ```cmake
+    cmake_minimum_required(VERSION 3.14.7)
+    project(everest-tutorial VERSION 0.1
+        DESCRIPTION "EVerest tutorial modules"
+        LANGUAGES CXX C)
+    find_package(everest-cmake 0.1 REQUIRED
+        COMPONENTS bundling
+        PATHS ../everest-cmake
+    )
+    option(BUILD_TESTING "Run unit tests" OFF)
+    option(CMAKE_RUN_CLANG_TIDY "Run clang-tidy" OFF)
+    if (NOT DISABLE_EDM)
+        evc_setup_edm()
+    else()
+        find_package(everest-core)
+        find_package(PalSigslot REQUIRED)
+    endif()
+    ev_add_project()
+    # add_subdirectory(config)
+    if(CMAKE_RUN_CLANG_TIDY)
+        message("Enabling clang-tidy")
+        set(CMAKE_CXX_CLANG_TIDY clang-tidy)
+    endif()
+    ```
+
+    Then create `modules/CMakeLists.txt` with one line per module:
+
+    ```cmake
+    ev_add_module(TutorialModule)
+    ```
+
+    Build and install:
+
+    ```bash
+    cd $EVEREST_TUTORIAL_DIR/build
+    CMAKE_PREFIX_PATH=$EVEREST_WORKSPACE cmake --install-prefix $EVEREST_TUTORIAL_DIR/dist ..
+    make -j$(nproc)
+    make install
+    ```
+  </Step>
+
+  <Step title="Configure and Run">
+    Create a minimal EVerest run configuration that loads your new module:
+
+    **`config/config-modules-tutorial.yaml`**
+
+    ```yaml
+    active_modules:
+      tutorial_module_instance:
+        module: TutorialModule
+    ```
+
+    Add `config/CMakeLists.txt` to auto-generate a run script:
+
+    ```cmake
+    generate_config_run_script(CONFIG modules-tutorial)
+    ```
+
+    Uncomment `add_subdirectory(config)` in the root `CMakeLists.txt`, then rebuild:
+
+    ```bash
+    cd $EVEREST_TUTORIAL_DIR/build
+    CMAKE_PREFIX_PATH=$EVEREST_WORKSPACE cmake --install-prefix $EVEREST_TUTORIAL_DIR/dist ..
+    make && make install
+    ```
+
+    Run EVerest using the generated script:
+
+    ```bash
+    LD_LIBRARY_PATH=$EVEREST_TUTORIAL_DIR/dist/lib:$LD_LIBRARY_PATH \
+    PATH=$EVEREST_TUTORIAL_DIR/dist/bin:$PATH \
+    manager \
+        --prefix $EVEREST_TUTORIAL_DIR/dist \
+        --config $EVEREST_TUTORIAL_DIR/config/config-modules-tutorial.yaml
+    ```
+
+    A successful start produces:
+
+    ```
+    [INFO] manager :: EVerest manager starting using .../config-modules-tutorial.yaml
+    [INFO] manager :: EVerest using MQTT broker localhost:1883
+    [INFO] tutorial_module :: Module tutorial_module_instance initialized.
+    [INFO] manager :: >>> All modules are initialized. EVerest up and running <<<
+    ```
+
+    You can now call `command_tutorial` over MQTT. Publish the following JSON to `everest/modules/tutorial_module_instance/impl/interface_impl_tutorial_module/cmd/command_tutorial`:
+
+    ```json
+    {
+      "msg_type": "Cmd",
+      "data": {
+        "args": {
+          "payload": "Hello World!"
+        },
+        "id": "00000000-0000-0000-0000-000000000042",
+        "origin": "manual_test"
+      }
+    }
+    ```
+
+    The response appears on `everest/modules/tutorial_module_instance/impl/interface_impl_tutorial_module/cmd/command_tutorial/response/manual_test`.
+  </Step>
+</Steps>
+
+## Debugging Your Module
+
+To attach a debugger, rebuild with debug symbols and start the manager with your module marked as standalone:
+
+```bash
+# Rebuild with debug symbols
+cd $EVEREST_TUTORIAL_DIR/build
+CMAKE_PREFIX_PATH=$EVEREST_WORKSPACE cmake --install-prefix $EVEREST_TUTORIAL_DIR/dist -DCMAKE_BUILD_TYPE=Debug ..
+make -j$(nproc)
+
+# Start manager without the tutorial module
+manager --prefix $EVEREST_TUTORIAL_DIR/dist \
+        --config $EVEREST_TUTORIAL_DIR/config/config-modules-tutorial.yaml \
+        --standalone tutorial_module_instance
+
+# In a second terminal, attach gdb
+gdb --args ./modules/TutorialModule/TutorialModule \
+    --module tutorial_module_instance \
+    --config $EVEREST_TUTORIAL_DIR/config/config-modules-tutorial.yaml \
+    --prefix $EVEREST_TUTORIAL_DIR/dist
+```
+
+Inside gdb, set a breakpoint in the command handler and run:
+
+```gdb
+break modules/TutorialModule/interface_impl_tutorial_module/interface_tutorial_moduleImpl.cpp:17
+run
+```
+
+<Tip>
+  The `--standalone` flag tells the manager to reserve a slot for your module but not spawn it — letting you launch the binary yourself under any debugger or profiler.
+</Tip>
+
+## What to Build Next
+
+With a working module skeleton in place, consider these natural extensions:
+
+<CardGroup cols={2}>
+  <Card title="Add Interface Variables" icon="broadcast-tower">
+    Declare variables in your interface YAML and call `publish_<var>()` to push values to other modules over MQTT.
+  </Card>
+  <Card title="Require Another Interface" icon="plug">
+    Add a `requires` section to your manifest to consume commands or variables from another module.
+  </Card>
+  <Card title="Python / Rust Modules" icon="code">
+    The same interface and manifest YAML files work for Python and Rust targets — only the generated stubs differ.
+  </Card>
+  <Card title="Unit Testing" icon="flask">
+    Enable `BUILD_TESTING` in CMake and use the EVerest test utilities to mock interfaces and test module logic in isolation.
+  </Card>
+</CardGroup>

@@ -1,0 +1,342 @@
+---
+title: 'EVerest Management APIs: Configuration and Lifecycle'
+sidebarTitle: 'Management APIs'
+description: 'Reference for the MQTT-based Configuration API and Lifecycle API for runtime module management, slot switching, and remote administration of EVerest.'
+---
+
+EVerest exposes two management APIs — the **Configuration API** and the **Lifecycle API** — that allow external clients to inspect and modify a running EVerest system over MQTT without touching the file system or restarting the manager process. Because both APIs are implemented inside the manager process itself, they remain available even when no module is running, making them the foundation for OTA configuration updates, cloud back-end integration, and admin UI tooling.
+
+<Note>
+  Both APIs are **disabled by default** and must be activated explicitly with command-line flags when the manager starts. They can be enabled in read-only or read-write mode independently of each other.
+</Note>
+
+---
+
+## Activating the APIs
+
+Pass one or both flags to the manager (or to any run-script that forwards extra arguments):
+
+<Tabs>
+  <Tab title="Read-only">
+    ```bash
+    # Read-only: inspect configuration and status, no modifications
+    ./run-scripts/run-sil.sh --configuration-api=ro --lifecycle-api=ro
+    ```
+  </Tab>
+  <Tab title="Read-write">
+    ```bash
+    # Read-write: full access including slot management and module stop/start
+    # Use --db so slot changes survive manager restarts
+    ./run-scripts/run-sil.sh --configuration-api=rw --lifecycle-api=rw \
+                              --db /var/lib/everest/everest.db
+    ```
+  </Tab>
+  <Tab title="Idle bootstrap">
+    ```bash
+    # Start in Idle with a fresh database; push config via API, then start modules
+    rm -f /tmp/everest.db
+    ./run-scripts/run-empty.sh \
+        --configuration-api=rw --lifecycle-api=rw \
+        --db /tmp/everest.db --into-idle
+    ```
+  </Tab>
+</Tabs>
+
+The manager logs which APIs were activated and in which mode:
+
+```text
+[INFO] manager :: Starting ConfigurationAPI in read-write mode
+[INFO] manager :: Starting LifecycleAPI in read-write mode
+```
+
+<Warning>
+  Without `--db`, the configuration database is kept in memory only. All slot changes made through the Configuration API are lost when the manager exits. Pass `--db <path>` to persist them.
+</Warning>
+
+---
+
+## Configuration API
+
+The Configuration API lets external clients manage the full lifecycle of configuration **slots** — named snapshots of the complete module topology and parameters — and read or write individual parameter values at runtime.
+
+### What it covers
+
+<CardGroup cols={2}>
+  <Card title="Slot management" icon="layer-group">
+    List, create, duplicate, describe, activate, and delete configuration slots stored in the database.
+  </Card>
+  <Card title="Load from YAML" icon="file-code">
+    Upload a YAML file's `active_modules` section to create a new slot without touching the file system on the device.
+  </Card>
+  <Card title="Read parameters" icon="magnifying-glass">
+    Query configuration parameter values from any slot — the active one or a staged slot — including values that have been persisted but not yet applied.
+  </Card>
+  <Card title="Write parameters" icon="pen">
+    Update parameter values at runtime. Changes to the active slot are forwarded to the running module if the parameter is mutable; changes to inactive slots are persisted and applied on the next restart.
+  </Card>
+</CardGroup>
+
+### What it does not cover
+
+Adding, removing, or renaming modules, or rewiring module connections, are **not** supported by the parameter-level API. Those changes require uploading a new YAML configuration with `load`, which replaces the entire slot's module topology.
+
+### Configuration Slots
+
+A **configuration slot** holds one complete EVerest module configuration: the set of active modules, their parameters, and their connections. The database can hold multiple slots simultaneously; exactly one is the **active** slot (the one the currently running modules were started from).
+
+Marking a different slot as the next boot slot does not restart anything immediately — it records the intent and the switch takes effect the next time modules are restarted via the Lifecycle API.
+
+```text
+Slot 0  ← active (running)
+Slot 1    (staged: different module set)
+Slot 2    (staged: copy of slot 0 with modified parameters)
+```
+
+### Parameter Write Outcomes
+
+When a write targets the **active slot**, the API reports one of the following per parameter:
+
+| Outcome | Meaning |
+|---|---|
+| `Applied` | Module accepted the change and applied it immediately. |
+| `WillApplyOnRestart` | Change is persisted; module requires a restart to apply it. |
+| `Rejected` | Module rejected the runtime change; still persisted for the next restart. |
+| `AccessDenied` | The access rules embedded in the module's manifest forbid this caller. |
+| `DoesNotExist` | No such parameter in the slot. |
+| `RetryLater` | Modules are mid-transition (starting, stopping). Try again once stable. |
+
+---
+
+## Lifecycle API
+
+The Lifecycle API lets external clients start, stop, and restart modules, and subscribe to status events that report the manager state in real time.
+
+### Commands
+
+<Accordion title="status — query current module status">
+  Returns the retained status object from the lifecycle status topic. Always reflects the last known state even if the client connected after the most recent transition.
+
+  ```json
+  {
+    "configuration_api_available": "RW",
+    "everest_running": true,
+    "lifecycle_api_ro": false,
+    "module_status": "Running",
+    "tstamp": "2026-09-02T17:24:39.478Z"
+  }
+  ```
+
+  The `module_status` field transitions through: `NotRunning` → `Starting` → `Running` → `Stopping` → `NotRunning`.
+</Accordion>
+
+<Accordion title="stop — stop all running modules">
+  Instructs the manager to drain and stop all module processes. The manager stays alive and the APIs remain available. The reply acknowledges the command; watch the `[status]` topic for `NotRunning` to confirm completion.
+
+  ```json
+  { "status": "Stopping" }
+  ```
+</Accordion>
+
+<Accordion title="start — start modules from the next-boot slot">
+  Instructs the manager to start modules using the slot marked for next boot. If modules are already running, the reply is `"Restarting"` (stop + start in a single command). If no slot is marked, the manager applies its boot source resolution rules.
+
+  ```json
+  { "status": "Starting" }
+  ```
+</Accordion>
+
+<Accordion title="version — query manager version">
+  Returns the manager version string. Available in read-only mode.
+</Accordion>
+
+### Last Will and Testament
+
+The lifecycle status topic (`everest_api/1/lifecycle/e2m/status`) is retained. When the manager shuts down cleanly it publishes `{"everest_running": false}` itself before disconnecting. If the manager crashes before it can publish, the MQTT broker delivers the same payload as the manager's configured LWT. The two cases are indistinguishable to a client.
+
+---
+
+## MQTT Topic Structure
+
+All management API topics share the prefix `everest_api/1/{api_type}/` where `1` is the API version and `{api_type}` is either `configuration` or `lifecycle`. Unlike regular EVerest module APIs, there is no `module_id` segment because the management APIs are implemented directly in the manager.
+
+```text
+everest_api/1/configuration/e2m/active_slot        ← manager → client (not retained)
+everest_api/1/configuration/e2m/config_updates     ← manager → client (not retained)
+everest_api/1/configuration/m2e/list_all_slots     ← client → manager (command)
+everest_api/1/configuration/m2e/load_from_yaml     ← client → manager (command)
+everest_api/1/lifecycle/e2m/status                 ← manager → client (retained)
+everest_api/1/lifecycle/m2e/stop                   ← client → manager (command)
+everest_api/1/lifecycle/m2e/start                  ← client → manager (command)
+```
+
+**Direction conventions:**
+- `m2e` — "module to EVerest": messages sent from a client to the manager
+- `e2m` — "EVerest to module": messages sent from the manager to clients
+
+### Request / Reply Envelope
+
+Commands are sent as a `RequestReply` envelope. The `replyTo` field names the topic the manager will publish its response on, allowing clients to correlate replies and distinguish concurrent requests:
+
+```json
+{
+  "headers": { "replyTo": "my-client/reply/1234" },
+  "payload": { "slot_id": 1 }
+}
+```
+
+The manager publishes the bare result object on the `replyTo` topic. Two error cases:
+
+- **Invalid envelope** (bad JSON, missing `headers`, missing `replyTo`): no reply is sent. The client will experience a timeout.
+- **Valid envelope, invalid payload**: the manager replies with the command's failure result (for example `Rejected`).
+
+### Retention Rules
+
+| Topic | Retained? | Notes |
+|---|---|---|
+| `lifecycle/e2m/status` | Yes | Latest status always available to late subscribers |
+| `configuration/e2m/active_slot` | No | Only clients subscribed at publication time receive it |
+| `configuration/e2m/config_updates` | No | Only clients subscribed at publication time receive it |
+
+---
+
+## everest-management-api-cli
+
+EVerest ships `everest-management-api-cli`, a command-line client for both APIs. It is installed into the Python virtual environment of the build directory when EVerest is built with `-DBUILD_TESTING=ON`.
+
+### Starting the interactive shell
+
+```bash
+cd build
+source venv/bin/activate
+everest-management-api-cli shell
+```
+
+```text
+EVerest management API shell. Type 'help' for commands, 'quit' to leave.
+Connected to 127.0.0.1:1883; watching everest_api/1/lifecycle/e2m/status,
+everest_api/1/configuration/e2m/active_slot and everest_api/1/configuration/e2m/config_updates.
+Status updates and notices are printed as they arrive.
+everest-api>
+```
+
+Every command is also available as a one-shot invocation for scripts:
+
+```bash
+everest-management-api-cli slots          # list configuration slots
+everest-management-api-cli status         # print current lifecycle status
+everest-management-api-cli watch          # subscribe and print status/notices only
+```
+
+Pass `--host` and `--port` to connect to a non-local MQTT broker.
+
+### Configuration API commands
+
+<CodeGroup>
+```text List and inspect slots
+everest-api> slots
+{
+  "slots": [
+    { "config_file_path": ".../config-example.yaml", "last_updated": "...", "slot_id": 0 },
+    { "description": "SIL setup", "last_updated": "...", "slot_id": 1 }
+  ]
+}
+
+everest-api> active
+{ "active_slot_id": 0, "next_boot_slot_id": 1 }
+
+everest-api> config 0          # full module configuration of slot 0
+```
+
+```text Load and duplicate slots
+# Load from a YAML file (only active_modules section is stored)
+everest-api> load --description "SIL setup" /path/to/config-sil.yaml
+{ "error_message": "", "slot_id": 1, "success": true }
+
+# Duplicate an existing slot
+everest-api> dup 1 --description "Copy of SIL for testing"
+{ "slot_id": 2, "success": true }
+
+# Delete a slot (not the active or next-boot slot)
+everest-api> delete 2
+{ "result": "Success" }
+```
+
+```text Mark next boot slot
+# Mark slot 1 to be used on the next module start
+everest-api> mark 1
+[active_slot] {"active_slot_id": 0, "next_boot_slot_id": 1, "status": "Running", ...}
+{ "result": "Success" }
+```
+
+```text Read and write parameters
+# Read a single parameter
+everest-api> getp 0 example log_interval
+
+# Write a single parameter
+everest-api> setp 0 example log_interval 5
+
+# Write implementation-level parameter
+everest-api> setp 0 example current --impl example 40
+
+# Bulk read/write from a partial YAML file
+everest-api> getp 0 --file cfg_update_to.yaml
+everest-api> setp 0 --file cfg_update_to.yaml
+```
+</CodeGroup>
+
+The bulk update file uses the same `active_modules` structure as the main config but only needs to contain the parameters being changed:
+
+```yaml
+active_modules:
+  example:
+    config_module:
+      log_interval: 3
+      enum_test: "two"
+    config_implementation:
+      example:
+        current: 40
+        enum_test: "two"
+        enum_test2: 1
+```
+
+### Lifecycle API commands
+
+```text
+everest-api> status            # query current module status
+everest-api> stop              # stop running modules (manager stays alive)
+everest-api> start             # start modules from next-boot slot
+everest-api> version           # query manager version
+```
+
+### Raw MQTT (no client library)
+
+The exchange can be reproduced with standard mosquitto tools, useful for quick debugging or scripting:
+
+```bash
+# List all configuration slots
+mosquitto_rr -q 2 -e my/reply \
+  -t everest_api/1/configuration/m2e/list_all_slots \
+  -m '{"headers":{"replyTo":"my/reply"},"payload":{}}'
+
+# Subscribe to everything the APIs publish
+mosquitto_sub -v -t 'everest_api/1/#'
+```
+
+---
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="OTA Configuration Updates" icon="cloud-arrow-up">
+    A cloud back-end loads a new YAML configuration into a slot, marks it for next boot, then triggers a module restart via the Lifecycle API — all without SSH access or a manager restart.
+  </Card>
+  <Card title="Admin / Commissioning UI" icon="sliders">
+    A browser-based commissioning tool subscribes to `config_updates` and `active_slot` for live feedback, reads the slot list on connect, and adjusts charger parameters through `setp` calls.
+  </Card>
+  <Card title="A/B Configuration Testing" icon="code-branch">
+    Maintain a stable slot and a staging slot side by side. Switch between them by marking the desired slot and restarting modules. Roll back instantly by marking the previous slot.
+  </Card>
+  <Card title="Embedded Watchdog" icon="shield-check">
+    A watchdog process monitors `lifecycle/e2m/status` for unexpected `NotRunning` transitions and automatically calls `start` to recover without operator intervention.
+  </Card>
+</CardGroup>

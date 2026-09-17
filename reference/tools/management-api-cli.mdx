@@ -1,0 +1,347 @@
+---
+title: 'management-api-cli: EVerest Runtime Control Tool'
+sidebarTitle: 'management-api-cli'
+description: "everest-management-api-cli is a CLI client for EVerest's Lifecycle and Configuration MQTT APIs — list slots, set parameters, and start or stop modules."
+---
+
+`everest-management-api-cli` is a command-line client for the two management APIs exposed by the EVerest manager process: the **Lifecycle API** (start and stop modules, observe module status) and the **Configuration API** (inspect and edit configuration slots and per-module parameters). The tool ships as a small Python package at `applications/utils/everest-management-api-cli` and is also the library backing the integration tests in `tests/management_api_tests`, so every command exercised in the shell or scripts is covered by the same test suite. All commands are available both in an interactive shell that keeps one connection open and prints notices as they arrive, and as one-shot invocations suitable for scripting.
+
+<Note>
+The manager must be started with `--lifecycle-api` and/or `--configuration-api` (optionally `=rw` for write access) for the corresponding API to be reachable. Without those flags the relevant MQTT topics are not subscribed.
+</Note>
+
+## Installation
+
+<Tabs>
+  <Tab title="From EVerest build venv">
+    Build EVerest with testing enabled. The CMake configure step installs `everest-management-api-cli` into the build's Python venv alongside `everest-testing`.
+
+    ```bash
+    cmake -S . -B build -DBUILD_TESTING=ON
+    cmake --build build
+    cd build/
+    source ./venv/bin/activate
+    everest-management-api-cli --help
+    ```
+  </Tab>
+  <Tab title="Manual pip install">
+    Install an editable copy from the source tree into any Python environment (Python ≥ 3.8 required). The only runtime dependencies are `paho-mqtt` (1.x or 2.x) and `pyyaml`.
+
+    ```bash
+    pip install -e applications/utils/everest-management-api-cli
+    ```
+
+    To include the test extras for running the bundled unit tests:
+
+    ```bash
+    pip install -e 'applications/utils/everest-management-api-cli[test]'
+    pytest applications/utils/everest-management-api-cli/tests
+    ```
+  </Tab>
+</Tabs>
+
+## Connection Options
+
+Every one-shot invocation accepts the following global options before the command name. The interactive shell uses the same connection settings entered at startup.
+
+<ParamField path="--host" type="string" default="127.0.0.1">
+  MQTT broker hostname or IP address. Overridden by the `MQTT_SERVER_ADDRESS` environment variable if set — the same variable the manager itself reads.
+</ParamField>
+
+<ParamField path="--port" type="integer" default="1883">
+  MQTT broker port. Overridden by the `MQTT_SERVER_PORT` environment variable if set.
+</ParamField>
+
+<ParamField path="--timeout" type="float" default="4.0">
+  Seconds to wait for a reply before failing with exit code 1.
+</ParamField>
+
+<ParamField path="--compact" type="flag">
+  Print replies as single-line JSON instead of pretty-printed output. Convenient for piping into `jq`.
+</ParamField>
+
+<ParamField path="--verbose / -v" type="flag">
+  Log MQTT client connection details to stderr.
+</ParamField>
+
+## Interactive Shell
+
+The quickest way to explore both APIs is the `shell` subcommand. It connects once, prints status updates and configuration notices as they arrive, and accepts commands interactively.
+
+```bash
+everest-management-api-cli shell
+```
+
+```text
+EVerest management API shell. Type 'help' for commands, 'quit' to leave.
+Connected to 127.0.0.1:1883; watching everest_api/1/lifecycle/e2m/status,
+everest_api/1/configuration/e2m/active_slot and everest_api/1/configuration/e2m/config_updates.
+Status updates and notices are printed as they arrive.
+everest-api> active
+{
+  "active_slot_id": 0,
+  "next_boot_slot_id": 0
+}
+everest-api> mark 1
+[active_slot] {"active_slot_id": 0, "next_boot_slot_id": 1, "status": "Running", "tstamp": "2026-09-02T17:24:10.937Z"}
+{
+  "result": "Success"
+}
+```
+
+The shell subscribes to the `status`, `active_slot`, and `config_updates` notice topics and prints incoming messages prefixed with `[status]`, `[active_slot]`, or `[config_updates]`. Because notices are not retained by the broker, start the shell **before** the manager if you want to see the ones published at boot. Type `help [COMMAND]` for per-command documentation, `timeout [SECONDS]` to inspect or change the reply timeout, and `quit` to exit.
+
+## Command Reference
+
+All commands are available in both the interactive shell and as one-shot invocations:
+
+```text
+everest-management-api-cli [--host HOST] [--port PORT] [--timeout SECONDS] [--compact] COMMAND ...
+```
+
+### Lifecycle API
+
+<AccordionGroup>
+  <Accordion title="status — Show the latest lifecycle status">
+    Reads the retained lifecycle status topic. Because the manager retains the last status on the broker, this command works at any time after a manager has published one.
+
+    ```bash
+    everest-management-api-cli status
+    everest-management-api-cli status --all
+    ```
+
+    | Option | Description |
+    |--------|-------------|
+    | `--all` | Print every status update received in this session, not only the latest. |
+    | `--wait SECONDS` | How long to wait for a first update (default: 2.0 s). |
+  </Accordion>
+
+  <Accordion title="version — Get the EVerest version">
+    Calls `get_everest_version` on the Lifecycle API and returns the version string of the running manager.
+
+    ```bash
+    everest-management-api-cli version
+    ```
+  </Accordion>
+
+  <Accordion title="start / stop — Start or stop all modules">
+    Calls `start_modules` or `stop_modules` on the Lifecycle API.
+
+    ```bash
+    everest-management-api-cli start
+    everest-management-api-cli stop
+    ```
+  </Accordion>
+
+  <Accordion title="watch — Stream live notices">
+    Subscribes to the status and configuration notice topics and prints every incoming message until `Ctrl-C` or `--duration` elapses. This is the one-shot counterpart of the shell's continuous live output.
+
+    ```bash
+    everest-management-api-cli watch
+    everest-management-api-cli watch --duration 30
+    ```
+  </Accordion>
+
+  <Accordion title="clear-retained-status — Remove stale broker status">
+    When a manager process is killed without a clean disconnect, the broker publishes and retains the manager's last-will status message. This command removes that retained message so that a subsequent `status` call does not report a stale state.
+
+    ```bash
+    everest-management-api-cli clear-retained-status
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Configuration API
+
+<AccordionGroup>
+  <Accordion title="slots / active — List slots and active slot">
+    `slots` calls `list_all_slots` and returns all configuration slots with their IDs and descriptions. `active` calls `get_active_slot` and returns the slot that is currently loaded and the slot scheduled for the next boot.
+
+    ```bash
+    everest-management-api-cli slots
+    everest-management-api-cli active
+    ```
+  </Accordion>
+
+  <Accordion title="mark SLOT — Schedule a slot for the next boot">
+    Calls `mark_active_slot`. The slot becomes active on the next manager restart; the currently running configuration is not changed immediately.
+
+    ```bash
+    everest-management-api-cli mark 1
+    ```
+  </Accordion>
+
+  <Accordion title="dup SLOT — Duplicate a slot">
+    Calls `duplicate_slot`, creating a new slot as a copy of the specified one. Optionally attach a description with `-d`.
+
+    ```bash
+    everest-management-api-cli dup 0 -d "staging variant"
+    ```
+  </Accordion>
+
+  <Accordion title="delete SLOT — Delete a slot">
+    Calls `delete_slot` to remove the specified configuration slot.
+
+    ```bash
+    everest-management-api-cli delete 2
+    ```
+  </Accordion>
+
+  <Accordion title="desc SLOT TEXT — Set a slot description">
+    Calls `set_description`. Multiple words are joined with spaces.
+
+    ```bash
+    everest-management-api-cli desc 1 production baseline
+    ```
+  </Accordion>
+
+  <Accordion title="load FILE — Load a config file into a slot">
+    Calls `load_from_yaml` with the contents of the specified YAML file. If the file is a full EVerest config (contains an `active_modules` key), only the `active_modules` subtree is sent — manager-level settings are stripped automatically.
+
+    ```bash
+    everest-management-api-cli load config/my-station.yaml -d "new layout"
+    # Load into an existing slot instead of creating a new one:
+    everest-management-api-cli load config/my-station.yaml --slot 1
+    ```
+  </Accordion>
+
+  <Accordion title="config SLOT — Get the full configuration for a slot">
+    Calls `get_configuration` and returns the complete module configuration for the given slot.
+
+    ```bash
+    everest-management-api-cli config 0
+    # Read the persisted (database) value instead of the in-memory value:
+    everest-management-api-cli config 0 --db
+    ```
+  </Accordion>
+
+  <Accordion title="getp SLOT MODULE PARAMETER — Get a parameter value">
+    Calls `get_config_parameters` for a single parameter or for every parameter listed in a file (see [Parameter files](#parameter-files)).
+
+    ```bash
+    # Module-level parameter:
+    everest-management-api-cli getp 0 example log_interval
+    # Implementation-level parameter:
+    everest-management-api-cli getp 0 example current --impl example
+    # All parameters from a file:
+    everest-management-api-cli getp 0 --file params.yaml
+    ```
+  </Accordion>
+
+  <Accordion title="setp SLOT MODULE PARAMETER VALUE — Set a parameter value">
+    Calls `set_config_parameters` for a single parameter or for every parameter in a file. The value is sent as a string; booleans and numbers use their JSON spelling (`true`/`false`, `3`, `40.5`).
+
+    ```bash
+    # Module-level parameter:
+    everest-management-api-cli setp 0 example log_interval 5
+    # Implementation-level parameter:
+    everest-management-api-cli setp 0 example current 32 --impl example
+    # Multiple parameters from a file:
+    everest-management-api-cli setp 0 --file params.yaml
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Diagnostic Commands
+
+<AccordionGroup>
+  <Accordion title="raw API COMMAND [JSON] — Send an arbitrary request">
+    Sends a hand-crafted payload to any Lifecycle or Configuration API topic. Useful for testing error handling or exploring undocumented behaviour.
+
+    ```bash
+    everest-management-api-cli raw configuration mark_active_slot '{"slot_id": 999}'
+    everest-management-api-cli raw lifecycle get_everest_version '{}'
+    ```
+
+    The `api` argument is either `lifecycle` or `configuration`.
+  </Accordion>
+</AccordionGroup>
+
+## Parameter Files
+
+The `setp --file` and `getp --file` options accept a YAML file that lists parameters in the same nested layout as a module configuration. The `getp` variant ignores the values — only the parameter addresses matter.
+
+```yaml
+active_modules:
+  example:                  # module id
+    config_module:          # module-level parameters
+      log_interval: 3
+    config_implementation:
+      example:              # implementation id
+        current: 40
+```
+
+This format mirrors the `active_modules` section of a full EVerest config file, making it straightforward to extract a subset of parameters from an existing config and use it as a batch `getp`/`setp` file.
+
+## Exit Codes
+
+One-shot invocations return a well-defined exit code so that the tool can be used reliably in shell scripts.
+
+| Code | Meaning |
+|------|---------|
+| `0` | A reply was received. A reply such as `Rejected` is a valid API answer and still returns 0. |
+| `1` | Timeout, connection failure, or invalid local input. |
+| `2` | Usage error (wrong arguments). |
+
+## Examples
+
+### List configuration slots and activate a different one
+
+```bash
+# List all available configuration slots
+everest-management-api-cli slots
+
+# See which slot is active now
+everest-management-api-cli active
+
+# Schedule slot 1 for the next boot
+everest-management-api-cli mark 1
+
+# Verify the next boot slot was updated
+everest-management-api-cli active
+```
+
+### Edit a parameter in the active slot at runtime
+
+```bash
+# Read the current value of the log_interval parameter in slot 0
+everest-management-api-cli getp 0 example log_interval
+
+# Update it to 5
+everest-management-api-cli setp 0 example log_interval 5
+
+# Confirm the change
+everest-management-api-cli getp 0 example log_interval
+```
+
+### Duplicate a slot and load a new config into the copy
+
+```bash
+# Duplicate slot 0 with a new description
+everest-management-api-cli dup 0 -d "experiment branch"
+
+# Note the new slot id from the reply, then load a config into it
+everest-management-api-cli load config/experiment.yaml --slot 1
+
+# Schedule the new slot for next boot
+everest-management-api-cli mark 1
+```
+
+### Watch live status updates while restarting the manager
+
+```bash
+# In one terminal, watch status and config notices as they arrive
+everest-management-api-cli watch
+
+# In another terminal, stop and restart the modules
+everest-management-api-cli stop
+everest-management-api-cli start
+```
+
+<Tip>
+Use `--compact` combined with `jq` to extract specific fields from replies in scripts:
+
+```bash
+everest-management-api-cli --compact active | jq '.next_boot_slot_id'
+```
+</Tip>

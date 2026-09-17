@@ -1,0 +1,223 @@
+---
+title: 'EVerest Release Cycle, Versioning, and Upgrade Guide'
+sidebarTitle: 'Releases'
+description: 'Understand EVerest CalVer versioning, the six-month stable release cadence, public API stability guarantees, deprecation policy, and upgrade procedures.'
+---
+
+EVerest uses a calendar-based versioning scheme and publishes stable releases every six months. This document explains how versions are numbered, what stability guarantees apply between patch and major releases, how the deprecation lifecycle works, and what steps to follow when upgrading between stable release lines. Understanding these policies helps both integrators and contributors make informed decisions about when and how to update their deployments.
+
+## Versioning Scheme
+
+EVerest follows [CalVer](https://calver.org/) — calendar-based versioning — with the format:
+
+```text
+yyyy.mm.x
+```
+
+| Segment | Meaning |
+|---|---|
+| `yyyy` | Four-digit year of the stable release |
+| `mm` | Two-digit month of the stable release (01–12) |
+| `x` | Incremental patch number within the stable line, starting at `0` |
+
+For example, `2026.01.0` is the initial stable release from January 2026, and `2026.01.3` is the fourth patch release in that same stable line.
+
+<Note>
+  Monthly snapshot releases were discontinued in 2026 in favour of the current six-month stable release approach.
+</Note>
+
+## Release Cadence
+
+EVerest publishes **stable releases every six months**. Each stable release:
+
+- Undergoes a coordinated community testing period before publication.
+- Is tagged in Git as `yyyy.mm.0` and creates a dedicated `stable/yyyy.mm` branch.
+- Receives community maintenance through patch releases for critical bugs and security issues.
+
+**Patch releases** (`yyyy.mm.x` where `x > 0`) are published as needed — there is no fixed schedule. They address bugs, security issues, and other critical fixes. They never introduce breaking changes to the public API and are backported from the `main` development branch.
+
+**Development versions** live on the `main` branch. They may introduce breaking changes and new features that will land in the next stable release. Do not use `main` for production deployments.
+
+## Public API Definition
+
+EVerest's public API is the set of interfaces that external users and integrators rely on. Stability guarantees (described in the next section) apply only to these components.
+
+<CardGroup cols={2}>
+  <Card title="External AsyncAPIs" icon="arrows-left-right">
+    The MQTT-based AsyncAPI 3.0 specifications that external clients subscribe to or publish on, documented in the EVerest AsyncAPI reference.
+  </Card>
+  <Card title="Energy Management JSON RPC API" icon="network-wired">
+    The JSON-RPC WebSocket API exposed by the `RpcApi` module for external energy management system integration.
+  </Card>
+  <Card title="EVerest Module Configuration" icon="sliders">
+    Module configuration files in YAML or SQLite, including the availability of modules under their stable names. Module implementations may change; only the name and equivalent functionality are guaranteed.
+  </Card>
+  <Card title="OCPP Configuration" icon="file-code">
+    OCPP configuration stored in JSON or SQLite. Schema migrations that require manual intervention are considered breaking changes.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Internal EVerest [interfaces](https://everest.github.io/nightly/reference/interfaces_index.html) and [types](https://everest.github.io/nightly/reference/types_index.html) are **explicitly excluded** from the public API and may change without notice. Dummy and Simulation modules — including their availability and configuration contracts — are also excluded.
+</Warning>
+
+## Stability Guarantees
+
+Within a stable release branch (e.g., all `2026.01.x` versions), **no breaking changes are backported to the public API**. Patch releases maintain full backward compatibility:
+
+- An EVerest or OCPP configuration that works with `2026.01.0` will work with `2026.01.5`.
+- An external AsyncAPI client compatible with `2026.01.0` will work with all `2026.01.x` releases.
+
+Across major stable releases (e.g., from `2026.01.x` to `2026.07.0`), EVerest makes a **best-effort attempt to minimize breaking changes**. However, breaking changes may occur for:
+
+- Significant architectural improvements.
+- Protocol compliance updates (e.g., new ISO 15118 or OCPP requirements).
+- Removal of components that have completed their deprecation period.
+
+If you are upgrading across stable release lines, always review the release notes and any published migration guides.
+
+## Experimental Components
+
+Public API components may be introduced as **experimental** before they are considered stable. Experimental components:
+
+- Are part of the public API surface but are **exempt from stability guarantees and the deprecation policy**.
+- May change in incompatible ways or be removed in any release without prior deprecation.
+- Are clearly marked as experimental in documentation, release notes, and — where feasible — at runtime via manager startup warnings.
+- Are tracked in the [Experimental Feature Index](https://everest.github.io/nightly/project/releases/experimental-index.html).
+
+Experimental components graduate to stable through an explicit promotion announced in release notes, or they are removed. With every stable release, maintainers review all experimental components and decide whether to promote, keep, or remove each one.
+
+<Tabs>
+  <Tab title="Current Experimental Features (2026.10.0)">
+    | Component | Experimental Since | Notes |
+    |---|---|---|
+    | `manager --graceful-shutdown` | 2026.10.0 | Opt-in graceful module shutdown; without it, module processes are terminated immediately on shutdown, restart, and crash. |
+    | `manager --into-idle` | 2026.10.0 | Boot into Idle without starting modules, keeping the configuration API available. |
+    | `manager --recover-module-crashes` | 2026.10.0 | Bounded automatic module restart after an unexpected module exit. |
+    | `manager --reset-from-yaml` | 2026.10.0 | Discard the database slot and re-seed from YAML config. Intended for development use. |
+    | `manager --idle-on-failure` | 2026.10.0 | Stay alive in Idle when there is nothing startable, instead of exiting with an error. |
+    | `EEBUS` module | 2026.10.0 | Bridge to an external EEBUS gRPC service. Configuration and integration may change; the upstream `eebus-go` maintainer is not continuing maintenance. |
+  </Tab>
+</Tabs>
+
+## Deprecation Policy
+
+EVerest follows a pragmatic deprecation approach: **public API components are never removed without warning**, and integrators always have at least one full stable release cycle to migrate before removal.
+
+### Deprecation Lifecycle
+
+A public API component passes through three phases:
+
+<Steps>
+  <Step title="Active">
+    The component is fully supported with no deprecation notice. It is covered by all stability guarantees.
+  </Step>
+  <Step title="Deprecated">
+    The component still functions as documented, but is marked deprecated. Release notes list the planned removal release, and a migration guide describes the replacement. Where feasible, EVerest emits a runtime warning when the deprecated component is used.
+  </Step>
+  <Step title="Removed">
+    The component is no longer available. Its removal is a breaking change and only occurs in a new stable release (`yyyy.mm.0`), never in a patch release.
+  </Step>
+</Steps>
+
+### Minimum Deprecation Period
+
+A component deprecated in one stable release **cannot be removed before the following stable release**. For example, a component deprecated in `2026.09.0` may not be removed before `2027.03.0`. Longer deprecation periods apply to widely used or integration-critical components.
+
+Internal interfaces, types, Dummy modules, and Simulation modules are excluded from this policy and may be removed without a deprecation period.
+
+### Active Deprecations (as of 2026.10.0)
+
+| Component | Deprecated In | Earliest Removal | Migration |
+|---|---|---|---|
+| `OCPP` module (OCPP 1.6), superseded by `OCPPmulti` | 2026.10.0 | 2027.04.0 | Migrate to the Combined OCPP Module |
+| `OCPP201` module (OCPP 2.0.1/2.1), superseded by `OCPPmulti` | 2026.10.0 | 2027.04.0 | Migrate to the Combined OCPP Module |
+| `RsIskraMeter` `meter` implementation ID | 2026.10.0 | 2027.04.0 | Change `implementation_id: meter` to `implementation_id: main` in config connections |
+| `evse_manager_consumer_API` `evse_id` topics (`e2m/evse_id`, `m2e/evse_id/get`) | 2026.10.0 | 2027.04.0 | Use the `get_evse` command, which provides both eMI3-format and DIN 70121 EVSE IDs |
+| `manager --conf` (alias of `--config`) | 2026.10.0 | 2027.04.0 | Replace `--conf <path>` with `--config <path>` in start scripts and service units |
+| `manager --db-init` (now a no-op) | 2026.10.0 | 2027.04.0 | Drop the flag; database seeding from YAML is the default with `--config --db` |
+| `ocpp_consumer_API` `is_connected` variable and `get_is_connected` request/reply | 2026.10.0 | 2027.04.0 | Subscribe to `receive_connection_status` instead |
+| OCPP 1.6 key-only variable addressing in `get_variables`, `set_variables`, `monitor_variables` | 2026.10.0 | 2027.04.0 | Switch to canonical component/variable addressing; OCPPmulti logs a warning with the canonical address on first use |
+| `EvseManager` config option `lock_connector_in_state_b: false` | 2026.10.0 | 2027.04.0 | Remove the option; set `unlock_when_deauthorized: true` instead |
+
+The canonical [Active Deprecation Index](https://everest.github.io/nightly/project/releases/deprecation-index.html) is updated with every stable release.
+
+## Breaking Changes Policy
+
+A change is considered **breaking** if it requires integrators to modify their code, configuration, or deployment to maintain existing functionality.
+
+<Accordion title="AsyncAPI breaking changes">
+  The following changes to AsyncAPI specifications are considered breaking:
+
+  - Changing or removing a channel address
+  - Removing an operation that external clients use
+  - Removing a field from a message payload
+  - Changing the data type of an existing field (e.g., `number` → `string`)
+  - Making an optional field required in messages that clients send
+  - Changing enum values or removing enum options
+  - Changing error handling behavior or validation strictness
+
+  Non-breaking examples include adding new optional fields, adding new channels, and adding new enum values.
+</Accordion>
+
+<Accordion title="Configuration and module contract breaking changes">
+  The following configuration changes are considered breaking:
+
+  - Removing or renaming a configuration option that deployments use
+  - Changing the type or semantics of an option value
+  - Making an optional option required without a sensible default
+  - Removing a module name that configurations reference (without a same-name replacement of equivalent functionality)
+  - Changing YAML/JSON schema structure in incompatible ways
+  - Database schema changes that require manual intervention (e.g., removing columns, adding `NOT NULL` constraints without defaults)
+
+  Non-breaking examples include adding new optional options with documented defaults, adding new tables, and adding nullable columns with migration scripts.
+</Accordion>
+
+When in doubt about whether a change is breaking, assume it is and consult the maintainers. The full [Breaking Changes Definition](https://everest.github.io/nightly/project/releases/breaking-changes.html) document provides detailed examples and a pre-merge review checklist.
+
+## Choosing the Right Version
+
+<CardGroup cols={3}>
+  <Card title="Production Deployments" icon="server">
+    Use the latest stable release (`yyyy.mm.0` or its latest patch). Stay on a single stable branch and apply patch releases to pick up security fixes.
+  </Card>
+  <Card title="Integration Development" icon="wrench">
+    Start against the latest stable release. Pin to a specific `yyyy.mm.x` tag in your dependency manager for reproducible builds.
+  </Card>
+  <Card title="Feature Preview / Research" icon="flask">
+    Track `main` only if you need unreleased features. Expect breaking changes and do not use `main` as a production dependency.
+  </Card>
+</CardGroup>
+
+## Upgrading Between Stable Releases
+
+<Steps>
+  <Step title="Read the release notes">
+    The release notes for the target stable release list all breaking changes, deprecated components that have been removed, new experimental features, and any migration guides. Review these before making any changes.
+  </Step>
+  <Step title="Check the Active Deprecation Index">
+    Verify whether any components your deployment uses are in the deprecation table. If removal is planned in the target release, follow the linked migration guide before upgrading.
+  </Step>
+  <Step title="Update your configuration files">
+    Apply any required changes to EVerest YAML or OCPP JSON/SQLite configuration. Breaking configuration changes are always documented in the release notes with before/after examples.
+  </Step>
+  <Step title="Update external API clients">
+    If you subscribe to or publish on EVerest AsyncAPI channels, check the release notes for removed or renamed channels and operations. Update client code and test against the new release in a staging environment.
+  </Step>
+  <Step title="Run the coordinated test suite">
+    EVerest includes integration tests that cover the public API surface. Run these against your specific hardware abstraction and configuration to catch any regressions before rolling out to production.
+  </Step>
+  <Step title="Apply patch releases incrementally">
+    Within a stable branch, patch releases are always backward-compatible. Apply them incrementally as they are published to pick up security and bug fixes without risking regressions.
+  </Step>
+</Steps>
+
+## Maintenance Policy
+
+Each stable release creates a `stable/yyyy.mm` branch that remains open for community contributions. Project maintainers focus active effort on the **current stable branch** and the `main` development branch. Security patches are backported to the current stable release on a best-effort basis.
+
+Older stable branches remain available for community-driven maintenance but have no guaranteed response times or fix schedules. If your deployment depends on an older branch, consider contributing maintenance work back to the project.
+
+<Note>
+  For questions about the release process or to report compatibility issues, contact the EVerest maintainers via [Zulip](https://lfenergy.zulipchat.com/) or review the [GitHub Releases page](https://github.com/EVerest/EVerest/releases).
+</Note>

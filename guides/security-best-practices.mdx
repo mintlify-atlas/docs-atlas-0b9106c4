@@ -1,0 +1,208 @@
+---
+title: 'Security Best Practices for EVerest Deployments'
+sidebarTitle: 'Security'
+description: 'Harden EVerest for production: bind MQTT to a Unix socket, use TLS SecurityProfile 3, store keys in TPM2, and run modules as a least-privilege system user.'
+---
+
+Deploying EVerest in a production charging station requires deliberate hardening at every layer — from the MQTT broker binding to the OCPP transport, from process privileges to the firmware update chain. This guide collects the security practices recommended by the EVerest project, drawing on the Linux Foundation Energy community's operational experience with real charger deployments.
+
+<Warning>
+  Reaching complete system-level security is a complex discipline that requires domain expertise. This guide provides a starting checklist; it does not replace a formal security assessment for your specific product.
+</Warning>
+
+## MQTT Broker Security
+
+The internal EVerest MQTT bus carries sensitive module communication. Exposing it on a network interface creates a significant attack surface.
+
+**Bind Mosquitto to a Unix domain socket** so only processes on the same host can connect:
+
+```text
+# mosquitto.conf
+listener 0 /tmp/mosquitto.socket
+```
+
+Tell EVerest to use the socket path in the EVerest config file's `settings` section:
+
+```yaml
+settings:
+  mqtt_broker_socket_path: /tmp/mosquitto.socket
+```
+
+If a portion of the MQTT API must be exposed to another process (for example, a mobile app on a local LAN), use a **separate Mosquitto instance** with mutually authenticated TLS, and bridge only the specific topics strictly needed. Never bridge the internal `everest` topic. Shut down the public instance when it is not in use.
+
+## OCPP Transport Security
+
+Always use **SecurityProfile 3** (mutual TLS) for the CSMS WebSocket connection in production. Set this in the `NetworkConfiguration` component config:
+
+```json
+{
+  "SecurityProfile": {
+    "variable_name": "SecurityProfile",
+    "attributes": [
+      {
+        "type": "Actual",
+        "mutability": "ReadWrite",
+        "value": 3
+      }
+    ]
+  }
+}
+```
+
+SecurityProfile options:
+
+| Profile | Transport | Authentication |
+|---|---|---|
+| 0 | `ws://` (unencrypted) | None (avoid in production) |
+| 1 | `ws://` (unencrypted) | Basic Auth |
+| 2 | `wss://` (TLS) | Server cert + Basic Auth |
+| 3 | `wss://` (TLS) | Mutual TLS (client + server certs) |
+
+For SecurityProfile 2 or 3, provision the required certificates and private keys through the `EvseSecurity` module before connecting.
+
+## Certificate Management via EvseSecurity
+
+The `EvseSecurity` module is the single point of truth for all certificates and keys on the charging station. It implements the `evse_security` interface consumed by `OCPPmulti`, `EvseV2G`, and `Evse15118D20`.
+
+Key operations it provides:
+
+- `install_ca_certificate` — install root certificates pushed by the CSMS
+- `update_leaf_certificate` — install or rotate SECC leaf certificates
+- `generate_certificate_signing_request` — generate CSRs for the `SignCertificate.req` flow
+- `verify_certificate` — verify contract and leaf certificate chains
+- `get_mo_ocsp_request_data` — retrieve OCSP stapling data for contract certificates
+
+Configure the EvseSecurity module with paths to your certificate store directories. For a Yocto deployment, certificate storage typically lives on the overlay partition so it persists across OTA updates.
+
+## TPM2 Integration
+
+For production hardware, use a **TPM 2.0** device to generate and store private keys. This prevents key extraction even if the application layer is compromised.
+
+Enable TPM usage for OCPP certificate operations by setting `UseTPM: true` in the OCPPmulti device model configuration (or the legacy OCPP 1.6 JSON `Internal` section):
+
+```json
+{
+  "Internal": {
+    "UseTPM": true
+  }
+}
+```
+
+Also configure the `EvseSecurity` module to use the TPM backend for key generation. For custom cloud connections, use mTLS with TPM-backed client certificates.
+
+If your hardware provides secure and encrypted boot options, enable them to ensure only signed firmware images can load — an important complement to TPM-based key protection.
+
+## Least-Privilege Process Model
+
+Never run EVerest modules as root. Create a dedicated low-privilege system user and configure EVerest to run module processes as that user.
+
+**Create the user in Yocto** (add to your image recipe):
+
+```bitbake
+inherit useradd
+USERADD_PACKAGES = "${PN}"
+USERADD_PARAM:${PN} = "-u 1500 -d /home/everest -g everest -G systemd-journal,dialout,tty,gpio,tss,mosquitto -r -s /bin/false everest"
+GROUPADD_PARAM:${PN} = "-g 1500 everest; -g 1501 gpio; -r systemd-journal; -r tss"
+```
+
+Specify the user in the EVerest config `settings` section:
+
+```yaml
+settings:
+  run_as_user: everest
+```
+
+The systemd service starts the manager process as root; the manager drops privileges and runs each module child process as the configured user, applying Linux capabilities as needed.
+
+Some modules require elevated Linux capabilities. Grant them per-module in the EVerest config:
+
+```yaml
+slac:
+  config_implementation:
+    main:
+      device: seth0
+      link_status_detection: true
+  module: EvseSlac
+  capabilities:
+    - CAP_NET_RAW
+```
+
+Modules that require elevated capabilities:
+
+| Module | Required Capabilities |
+|---|---|
+| `EvseSlac` / `EvSlac` | `CAP_NET_RAW` |
+| `Setup` | `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_DAC_OVERRIDE` |
+| `PacketSniffer` | `CAP_NET_RAW` |
+
+## Disable the Admin Panel in Production
+
+The EVerest admin panel backend listens on port 8849 and is intended for development only. Disable it on production units:
+
+```cmake
+-DEVEREST_ENABLE_ADMIN_PANEL_BACKEND=OFF
+```
+
+<Note>
+  The Yocto `meta-everest` recipes disable the admin panel backend by default. If you use a different build system, ensure this flag is explicitly set to `OFF`.
+</Note>
+
+## Powerline Network Isolation
+
+To prevent internal EVerest services from being reachable via the powerline (PLC) interface, use `ip6tables` to restrict traffic on the PLC device (replace `seth0` with your interface name):
+
+```bash
+ip6tables -A INPUT  -i seth0 -p ipv6-icmp -j ACCEPT
+ip6tables -A INPUT  -i seth0 -p udp -m udp --dport 15118 -j ACCEPT
+ip6tables -A INPUT  -i seth0 -p tcp -m tcp --dport 50000 -j ACCEPT
+ip6tables -A INPUT  -i seth0 -p tcp -m tcp --dport 61341 -j ACCEPT
+ip6tables -A INPUT  -i seth0 -p tcp -m tcp --dport 64109 -j ACCEPT
+ip6tables -A OUTPUT -o seth0 -p ipv6-icmp -j ACCEPT
+ip6tables -A OUTPUT -o seth0 -p udp -m udp --sport 15118 -j ACCEPT
+ip6tables -A OUTPUT -o seth0 -p tcp -m tcp --sport 50000 -j ACCEPT
+ip6tables -A OUTPUT -o seth0 -p tcp -m tcp --sport 61341 -j ACCEPT
+ip6tables -A OUTPUT -o seth0 -p tcp -m tcp --sport 64109 -j ACCEPT
+```
+
+Port reference:
+- **15118** — SDP (SECC Discovery Protocol, ISO 15118-8)
+- **61341** — `EvseV2G` TCP and TLS
+- **64109** — `EvseV2G` TLS
+- **50000** — `Evse15118D20` TCP and TLS (libiso15118)
+
+## System-Level Security Checklist
+
+The following items apply to the broader embedded Linux system:
+
+<Accordion title="Firmware and boot security">
+- Enable secure boot with a full lockdown that prevents unsigned code from booting on production units.
+- Disable the bootloader console on production units.
+- Disable all UART console login ports.
+- Disable or permanently lock programmer interfaces (SWD, JTAG) on production units.
+- Do not expose USB ports unless strictly necessary and access-controlled.
+- Evaluate whether the root filesystem or special partitions require encryption.
+</Accordion>
+
+<Accordion title="Update and key management">
+- Use a secure vault (e.g. TPM 2.0) for all private keys on the device.
+- Maintain the signing PKI for secure boot and OTA updates. Loss of the private root key means hardware in the field cannot be updated.
+- Use signed (and optionally encrypted) OTA update bundles. EVerest recommends RAUC for this.
+- Ensure all components — including third-party firmware — can be updated through the standard OTA package.
+</Accordion>
+
+<Accordion title="Network and access control">
+- Verify that only absolutely necessary services are accessible on each network interface.
+- Do not use default passwords. Prefer certificate-based authentication over passwords wherever possible.
+- Lock down all maintenance, service, and repair ports.
+- Maintain the complete Linux system and apply regular security updates.
+</Accordion>
+
+<Accordion title="Operational hardening">
+- Use software and hardware watchdogs to recover from unexpected crashes.
+- Run EVerest at a high scheduler priority (e.g. `nice` level `-20`) on resource-constrained hardware to ensure ISO 15118 timing requirements are met.
+- Use a preemptive kernel (`CONFIG_PREEMPT`) for low latency in user space.
+</Accordion>
+
+## Reporting Security Vulnerabilities
+
+EVerest is a Linux Foundation Energy project and follows the OpenSSF security disclosure process. To report a security vulnerability, contact the EVerest security team via the [EVerest mailing list](https://lists.lfenergy.org/g/everest) or through the GitHub security advisory system for the relevant repository.

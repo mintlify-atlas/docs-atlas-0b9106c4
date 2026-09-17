@@ -1,0 +1,189 @@
+---
+title: 'Error Handling with the EVerest Error Framework'
+sidebarTitle: 'Error Framework'
+description: 'The EVerest error framework provides typed raise, clear, and subscribe across module boundaries for fault coordination and centralized error reporting.'
+---
+
+A charging station is a safety-critical system. Faults in one module — a hardware driver detecting an overcurrent, an isolation monitor failing a self-test, or a communication timeout — must be visible to the modules that depend on them. The EVerest error framework provides a structured, framework-managed mechanism for raising, clearing, and subscribing to errors across module boundaries. It ensures that error information is typed, traceable to its origin, and propagated without requiring modules to know each other's internal implementation details.
+
+## Purpose
+
+Not every module can decide unilaterally how to handle a fault that originates in a dependency. The error framework solves two related problems:
+
+1. **Coordinated fault reaction** — A module can subscribe to errors raised by its required modules and adjust its own behavior accordingly. For example, `EvseManager` can disable charging when a powermeter raises a measurement error.
+2. **Centralized monitoring and reporting** — A dedicated module (such as the OCPP module or `ErrorHistory`) can subscribe globally to all errors in the system and report them to a backend or store them for audit purposes.
+
+## The Error Object
+
+Every error in EVerest is represented as an instance of the `Error` class, which carries the following fields:
+
+<Accordion title="Error object fields">
+
+| Field | Description |
+|---|---|
+| `type` | The error type, scoped to the interface (e.g., `evse_manager/Inoperative`) |
+| `sub_type` | An optional sub-classification within the error type |
+| `message` | A human-readable description of the specific fault instance |
+| `description` | Additional contextual information (optional) |
+| `origin.module_id` | The instance ID of the module that raised the error |
+| `origin.implementation_id` | The implementation ID within that module |
+| `origin.mapping` | Optional 3-tier mapping (`evse`, `connector`) of the origin |
+| `vendor_id` | Optional vendor-specific error identifier |
+| `severity` | Severity level of the error |
+| `timestamp` | UTC timestamp of when the error was raised (immutable after creation) |
+| `uuid` | Unique identifier for this error instance (immutable after creation) |
+| `state` | Current state: `Active` or `Cleared` |
+
+</Accordion>
+
+The fields `timestamp`, `origin.module_id`, `origin.implementation_id`, and `uuid` are set by the `ErrorFactory` at creation time and cannot be modified afterward.
+
+## Raising Errors
+
+Each interface implementation has access to an `ErrorFactory` instance pre-populated with the correct `module_id` and `implementation_id` defaults. Use the factory to create an error object, optionally customize it, and then call `raise_error()`.
+
+```cpp
+// Standard signature: ErrorType, ErrorSubType, and message are required
+auto error = error_factory->create_error(
+    "evse_manager/Inoperative",
+    "",
+    "Board support reported hardware fault"
+);
+raise_error(error);
+```
+
+The `ErrorFactory::create_error()` has five signatures for convenience:
+
+- **Default** — no arguments; initializes with default values
+- **Standard** — requires `ErrorType`, `ErrorSubType`, and `message`
+- **Contextual (severity)** — extends Standard with a `severity` argument
+- **Contextual (state)** — extends Standard with a `state` argument
+- **Contextual (both)** — extends Standard with both `severity` and `state`
+
+After creation, you may modify any field except `timestamp`, `origin.module_id`, `origin.implementation_id`, and `uuid`.
+
+## Clearing Errors
+
+An error can only be cleared by the same interface implementation that raised it. Three clearing functions are available:
+
+```cpp
+// Clear all errors of a specific type (ignores sub-type)
+clear_error("evse_manager/Inoperative");
+
+// Clear only errors matching both type and sub-type
+clear_error("evse_manager/Inoperative", "hardware_fault");
+
+// Clear all active errors for this implementation
+clear_all_errors_of_impl();
+```
+
+When an error is cleared, any modules that subscribed to it receive a notification via their registered cleared-callback, allowing them to restore normal operation.
+
+## Subscribing to Errors
+
+A module can subscribe to errors raised by any of its requirements. Two subscription functions are available, mirroring the clear overloads:
+
+```cpp
+// Subscribe to a specific error type on a requirement
+r_powermeter->subscribe_error(
+    "powermeter/CommunicationFault",
+    // raised callback
+    [this](const Everest::error::Error& error) {
+        EVLOG_warning << "Powermeter communication fault: " << error.message;
+        // react: pause charging, raise own error, etc.
+    },
+    // cleared callback
+    [this](const Everest::error::Error& error) {
+        EVLOG_info << "Powermeter communication fault cleared";
+        // restore: resume charging
+    }
+);
+
+// Subscribe to ALL errors from a requirement
+r_bsp->subscribe_all_errors(
+    [this](const Everest::error::Error& error) {
+        EVLOG_error << "BSP error raised: " << error.type;
+    },
+    [this](const Everest::error::Error& error) {
+        EVLOG_info << "BSP error cleared: " << error.type;
+    }
+);
+```
+
+The first argument to `subscribe_error()` is the `ErrorType` string. The two callbacks cover raised and cleared events respectively.
+
+## Global Error Subscription
+
+Some modules — such as OCPP or `ErrorHistory` — need visibility into every error raised anywhere in the system, not just from their direct requirements. This is supported through a global subscription mechanism, available only in C++ modules.
+
+To enable it, set `enable_global_errors: true` in the module's `manifest.yaml`:
+
+```yaml
+enable_global_errors: true
+```
+
+With this flag set, the `ev-cli` code generator emits a `subscribe_global_all_errors()` function in the module class, usable just like the per-requirement subscribe functions:
+
+```cpp
+subscribe_global_all_errors(
+    [this](const Everest::error::Error& error) {
+        // report to OCPP backend or write to error history DB
+        const auto evse_id = error.origin.mapping.has_value()
+            ? error.origin.mapping.value().evse
+            : 0;
+        report_error_to_backend(evse_id, error);
+    },
+    [this](const Everest::error::Error& error) {
+        report_error_cleared_to_backend(error);
+    }
+);
+```
+
+<Warning>
+  A module subscribed to global errors should only perform **reporting** actions (logging, sending to a backend, writing to a database). It must not change its own charging control behavior based on errors from unrelated modules. Side effects of error subscriptions should be documented in the module's documentation.
+</Warning>
+
+## Checking Error State Programmatically
+
+The `ErrorStateMonitor` is provided for each implementation and each requirement. It allows checking whether a specific error is currently active without registering a subscription callback.
+
+```cpp
+// Check if a specific error type is currently active
+bool is_fault_active = r_bsp->error_state_monitor->is_error_active(
+    "evse_board_support/CommunicationFault",
+    ""  // empty string matches any sub-type
+);
+
+// Check a set of conditions simultaneously
+Everest::error::StateCondition cond1{
+    "powermeter/CommunicationFault", "", true   // active = true
+};
+Everest::error::StateCondition cond2{
+    "evse_board_support/MREC5", "", false        // active = false (cleared)
+};
+
+bool ready_to_charge = r_bsp->error_state_monitor->is_condition_satisfied({cond1, cond2});
+```
+
+`is_condition_satisfied()` accepts either a single `StateCondition` or a vector of conditions and returns `true` only when all conditions are simultaneously satisfied.
+
+## 3-Tier Error Mapping
+
+Errors carry origin mapping information that associates them with a specific EVSE or connector in the physical tier model. This is populated automatically from the module's configured `mapping` in the run configuration.
+
+When using global error subscriptions, the mapping can be read from `error.origin.mapping`:
+
+```cpp
+const auto error_handler = [this](const Everest::error::Error& error) {
+    const auto evse_id = error.origin.mapping.has_value()
+        ? error.origin.mapping.value().evse
+        : 0;
+    const auto connector_id = error.origin.mapping.has_value()
+        ? error.origin.mapping.value().connector
+        : 0;
+};
+
+subscribe_global_all_errors(error_handler, error_cleared_handler);
+```
+
+This mapping is consumed by OCPP modules to attach errors to the correct EVSE in `StatusNotification` messages and by energy management to attribute faults to specific charging points.

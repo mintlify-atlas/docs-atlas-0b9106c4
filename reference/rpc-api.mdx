@@ -1,0 +1,597 @@
+---
+title: 'RpcApi: JSON-RPC WebSocket API Reference'
+sidebarTitle: 'RpcApi'
+description: 'JSON-RPC 2.0 over WebSocket API for reading EVSE status, monitoring charging sessions, and controlling charging parameters from external applications.'
+---
+
+The RpcApi module provides a standardized JSON-RPC 2.0 interface over WebSocket for external applications that need to interact with an EVerest-based charge point. It is designed as a lightweight, transport-independent communication layer focused on displaying and setting charging parameters during active sessions. Typical use cases include energy management system integrations, fleet management back-ends, end-user mobile or web applications, and service-technician diagnostic tools. The module is authored by chargebyte GmbH and licensed under Apache-2.0.
+
+## Feature Overview
+
+| Feature | Status |
+|---|---|
+| WebSocket transport (no TLS) | ✅ Supported |
+| WebSocket transport (with TLS) | ❌ Not yet implemented |
+| Authentication / permission handling | ❌ Not yet implemented |
+| Multiple EVSE support | ✅ Supported |
+| Multiple connector support | ❌ Not yet implemented |
+| EVSE information retrieval | ✅ Supported |
+| EVSE status retrieval | ✅ Supported |
+| Hardware capabilities retrieval | ✅ Supported |
+| Meter data retrieval | ✅ Supported |
+| AC charging current control | ✅ Supported |
+| DC charging power control | ✅ Supported |
+| AC phase count control | ✅ Supported |
+| Connector enable/disable | ✅ Supported |
+| Active error monitoring | ✅ Supported |
+| Status and capabilities notifications | ✅ Supported |
+| DC charge parameters | ❌ Not yet implemented |
+| DC charge status | ❌ Not yet implemented |
+| ISO 15118-20 display parameters | ❌ Not yet implemented |
+
+## Configuration Parameters
+
+The RpcApi module is configured in your EVerest configuration file under `config_module`. All parameters are optional and fall back to their defaults if omitted.
+
+<ParamField body="websocket_enabled" type="boolean" default="true">
+  Enable or disable the WebSocket server. Set to `false` to start the module without accepting connections, which can be useful during testing or staged rollouts.
+</ParamField>
+
+<ParamField body="websocket_port" type="integer" default="8080">
+  TCP port the WebSocket server listens on.
+</ParamField>
+
+<ParamField body="websocket_interface" type="string" default='"lo"'>
+  Network interface the WebSocket server binds to. Use a device name such as `eth1` or `eth0` to restrict access, or `"all"` to listen on every interface. The default `"lo"` restricts connections to the loopback interface only, which is appropriate for local integrations.
+</ParamField>
+
+<ParamField body="websocket_tls_enabled" type="boolean" default="false">
+  Enable TLS for the WebSocket connection. Currently not implemented — setting this to `true` has no effect in the current release.
+</ParamField>
+
+<ParamField body="authentication_required" type="boolean" default="false">
+  Require clients to present an authentication token with every request. Currently not implemented.
+</ParamField>
+
+<ParamField body="max_decimal_places_other" type="integer" default="2">
+  Maximum number of decimal places applied to all floating-point values in responses. Set to `0` to disable rounding. Minimum value: `0`.
+</ParamField>
+
+## Required Connections
+
+The RpcApi module declares its dependencies via the `requires` section of its manifest. These connections must be wired in your EVerest configuration.
+
+| Connection key | Interface | Min | Max | Notes |
+|---|---|---|---|---|
+| `evse_manager` | `evse_manager` | 1 | 128 | At least one EVSE manager must be connected. Each connected instance becomes a separately addressable EVSE in the API, indexed from 1. |
+| `evse_energy_sink` | `external_energy_limits` | 0 | 128 | Optional. Provides energy limit information per EVSE. |
+| `charger_information` | `charger_information` | 0 | 1 | Optional. Provides vendor, model, and firmware metadata returned in `API.Hello` responses. |
+
+The module also sets `enable_global_errors: true`, so it receives and can report all active errors across the entire EVerest instance.
+
+## Connecting to the WebSocket Endpoint
+
+Once EVerest is running with RpcApi configured, connect any JSON-RPC 2.0 WebSocket client to:
+
+```text
+ws://<host>:<websocket_port>
+```
+
+With default settings on the same host:
+
+```text
+ws://127.0.0.1:8080
+```
+
+<Warning>
+  Every client **must** call `API.Hello` within **5 seconds** of establishing the WebSocket connection. The server will automatically close the connection if the handshake is not completed in time.
+</Warning>
+
+A Python-based JSON-RPC GUI test client is included in the module's `tools/` directory and can be used as a reference implementation when building your own client.
+
+## JSON-RPC Message Structure
+
+All messages follow the JSON-RPC 2.0 envelope. Client requests take the form:
+
+```json
+{"jsonrpc": "2.0", "method": "<MethodName>", "id": 1, "params": {}}
+```
+
+`params` may be omitted when a method takes no arguments. Server responses follow:
+
+```json
+{"jsonrpc": "2.0", "id": 1, "result": {}}
+```
+
+Server-initiated notifications (no `id` field):
+
+```json
+{"jsonrpc": "2.0", "method": "<NotificationName>", "params": {}}
+```
+
+<Note>
+  Charging parameter changes (such as setting a current limit via `EVSE.SetACChargingCurrent`) are applied on a best-effort basis. If EVerest has been configured with an upper bound lower than the requested value, the lower bound is silently applied. Always observe the `EVSE.StatusChanged` notification to confirm the effective value.
+</Note>
+
+## API Methods
+
+Methods are organized into three hierarchical namespaces: **API** (general handshake), **ChargePoint** (station-wide operations), and **EVSE** (per-EVSE operations).
+
+### API Namespace
+
+<Accordion title="API.Hello — Initial handshake">
+  Must be called within 5 seconds of connecting. Returns basic charge-point metadata and API version information required for all further communication.
+
+  **Request** (no params required):
+  ```json
+  {"jsonrpc": "2.0", "method": "API.Hello", "id": 1}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "authentication_required": "bool",
+    "api_version": "string",
+    "charger_info": {
+      "vendor": "string",
+      "model": "string",
+      "serial": "string",
+      "friendly_name": "string",
+      "manufacturer": "string",
+      "firmware_version": "string"
+    }
+  }
+  ```
+
+  The fields `authenticated`, `permission_scopes`, and `everest_version` are defined in the schema but not yet supported.
+</Accordion>
+
+### ChargePoint Namespace
+
+<Accordion title="ChargePoint.GetEVSEInfos — List all EVSEs">
+  Returns static information about every EVSE configured in the charge point.
+
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "ChargePoint.GetEVSEInfos", "id": 2}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "infos": [
+      {
+        "index": 1,
+        "id": "string",
+        "description": "string",
+        "available_connectors": [
+          {
+            "index": 1,
+            "type": "cType2",
+            "description": "string"
+          }
+        ],
+        "supported_energy_transfer_modes": ["AC_three_phase_core"]
+      }
+    ],
+    "error": "NoError"
+  }
+  ```
+</Accordion>
+
+<Accordion title="ChargePoint.GetActiveErrors — List current errors">
+  Returns all currently active error conditions across the charge point for diagnostic and remote monitoring purposes.
+
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "ChargePoint.GetActiveErrors", "id": 3}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "active_errors": [
+      {
+        "type": "string",
+        "sub_type": "string",
+        "message": "string",
+        "description": "string",
+        "origin": {
+          "module_id": "string",
+          "implementation_id": "string",
+          "evse_index": 1
+        },
+        "severity": "string",
+        "timestamp": "string",
+        "uuid": "string"
+      }
+    ],
+    "error": "NoError"
+  }
+  ```
+
+  Returns an empty array when no errors are active.
+</Accordion>
+
+### EVSE Namespace
+
+All EVSE methods require an `evse_index` parameter. The index corresponds to the connection order of `evse_manager` entries in the module configuration, starting at `1`.
+
+<Accordion title="EVSE.GetInfo — EVSE static information">
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "EVSE.GetInfo", "id": 4, "params": {"evse_index": 1}}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "info": {
+      "index": 1,
+      "id": "string",
+      "available_connectors": [],
+      "supported_energy_transfer_modes": ["AC_three_phase_core"]
+    },
+    "error": "NoError"
+  }
+  ```
+</Accordion>
+
+<Accordion title="EVSE.GetStatus — Current EVSE state">
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "EVSE.GetStatus", "id": 5, "params": {"evse_index": 1}}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "status": {
+      "charged_energy_wh": 0.0,
+      "discharged_energy_wh": 0.0,
+      "charging_duration_s": 0,
+      "charging_allowed": true,
+      "available": true,
+      "active_connector_index": 1,
+      "error_present": false,
+      "charge_protocol": "IEC61851",
+      "state": "Unplugged"
+    },
+    "error": "NoError"
+  }
+  ```
+</Accordion>
+
+<Accordion title="EVSE.GetHardwareCapabilities — Hardware limits">
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "EVSE.GetHardwareCapabilities", "id": 6, "params": {"evse_index": 1}}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "hardware_capabilities": {
+      "max_current_A_export": 32.0,
+      "max_current_A_import": 32.0,
+      "max_phase_count_export": 3,
+      "max_phase_count_import": 3,
+      "min_current_A_export": 6.0,
+      "min_current_A_import": 6.0,
+      "min_phase_count_export": 1,
+      "min_phase_count_import": 1,
+      "phase_switch_during_charging": true
+    },
+    "error": "NoError"
+  }
+  ```
+</Accordion>
+
+<Accordion title="EVSE.GetMeterData — Current meter readings">
+  **Request:**
+  ```json
+  {"jsonrpc": "2.0", "method": "EVSE.GetMeterData", "id": 7, "params": {"evse_index": 1}}
+  ```
+
+  **Response:**
+  ```json
+  {
+    "meter_data": {
+      "timestamp": "2024-01-15T10:30:00Z",
+      "meter_id": "string",
+      "energy_Wh_import": {"L1": 100.0, "L2": 100.0, "L3": 100.0, "total": 300.0},
+      "current_A": {"L1": 16.0, "L2": 16.0, "L3": 16.0, "N": 0.0},
+      "power_W": {"L1": 3680.0, "L2": 3680.0, "L3": 3680.0, "total": 11040.0},
+      "voltage_V": {"L1": 230.0, "L2": 230.0, "L3": 230.0}
+    },
+    "error": "NoError"
+  }
+  ```
+</Accordion>
+
+<Accordion title="EVSE.SetChargingAllowed — Pause or resume charging">
+  Explicitly permits or blocks charging on the EVSE regardless of authorization state. Use this to implement managed charging pauses.
+
+  **Request:**
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "EVSE.SetChargingAllowed",
+    "id": 8,
+    "params": {"evse_index": 1, "charging_allowed": false}
+  }
+  ```
+
+  **Response:**
+  ```json
+  {"error": "NoError"}
+  ```
+</Accordion>
+
+<Accordion title="EVSE.SetACChargingCurrent — Set AC current limit">
+  Configures the maximum AC charging current in amperes for the specified EVSE. The effective value applied may be lower if EVerest has a stricter upper bound configured internally.
+
+  **Request:**
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "EVSE.SetACChargingCurrent",
+    "id": 9,
+    "params": {"evse_index": 1, "max_current": 16.0}
+  }
+  ```
+
+  **Response:**
+  ```json
+  {"error": "NoError"}
+  ```
+</Accordion>
+
+<Accordion title="EVSE.SetACChargingPhaseCount — Set AC phase count">
+  **Request:**
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "EVSE.SetACChargingPhaseCount",
+    "id": 10,
+    "params": {"evse_index": 1, "phase_count": 3}
+  }
+  ```
+
+  **Response:**
+  ```json
+  {"error": "NoError"}
+  ```
+</Accordion>
+
+<Accordion title="EVSE.SetDCChargingPower — Set DC power limit">
+  Configures the maximum DC charging power in watts.
+
+  **Request:**
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "EVSE.SetDCChargingPower",
+    "id": 11,
+    "params": {"evse_index": 1, "max_power": 50000.0}
+  }
+  ```
+
+  **Response:**
+  ```json
+  {"error": "NoError"}
+  ```
+</Accordion>
+
+<Accordion title="EVSE.EnableConnector — Enable or disable a connector">
+  Enables or disables a specific connector on the EVSE. Use `connector_index: 0` to enable or disable the entire EVSE. The `priority` parameter determines precedence when multiple sources request conflicting states.
+
+  **Request:**
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "method": "EVSE.EnableConnector",
+    "id": 12,
+    "params": {
+      "evse_index": 1,
+      "connector_index": 1,
+      "enable": true,
+      "priority": 0
+    }
+  }
+  ```
+
+  **Response:**
+  ```json
+  {"error": "NoError"}
+  ```
+</Accordion>
+
+## Server Notifications
+
+The server sends notifications without a client request whenever observed properties change. Clients must be prepared to receive these at any time after calling `API.Hello`.
+
+<Tabs>
+  <Tab title="ChargePoint.ActiveErrorsChanged">
+    Sent when the set of active errors changes.
+
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "ChargePoint.ActiveErrorsChanged",
+      "params": {
+        "active_errors": []
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="EVSE.StatusChanged">
+    Sent when an EVSE changes state — for example, when a vehicle plugs in, authorization completes, or charging starts.
+
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "EVSE.StatusChanged",
+      "params": {
+        "evse_index": 1,
+        "evse_status": {
+          "state": "Charging",
+          "charging_allowed": true,
+          "charge_protocol": "ISO15118",
+          "charged_energy_wh": 1250.5
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="EVSE.HardwareCapabilitiesChanged">
+    Sent when EVSE hardware capabilities are updated at runtime (e.g., due to thermal derating).
+
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "EVSE.HardwareCapabilitiesChanged",
+      "params": {
+        "evse_index": 1,
+        "hardware_capabilities": {
+          "max_current_A_import": 20.0,
+          "max_phase_count_import": 3
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="EVSE.MeterDataChanged">
+    Sent periodically or when meter data updates.
+
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "method": "EVSE.MeterDataChanged",
+      "params": {
+        "evse_index": 1,
+        "meter_data": {
+          "timestamp": "2024-01-15T10:31:00Z",
+          "energy_Wh_import": {"total": 1500.0},
+          "power_W": {"total": 11040.0}
+        }
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Enumerations
+
+### `ResponseErrorEnum`
+
+Returned in the `error` field of every method response.
+
+```text
+NoError
+ErrorInvalidParameter
+ErrorOutOfRange
+ErrorValuesNotApplied
+ErrorInvalidEVSEIndex
+ErrorInvalidConnectorId
+ErrorNoDataAvailable
+ErrorUnknownError
+```
+
+### `EVSEStateEnum`
+
+Reported in `EVSEStatusObj.state` and `EVSE.StatusChanged` notifications.
+
+```text
+Unplugged
+Disabled
+Preparing
+Reserved
+AuthRequired
+Charging
+ChargingPausedEV
+ChargingPausedEVSE
+Finished
+SwitchingPhases
+```
+
+### `ChargeProtocolEnum`
+
+```text
+Unknown
+IEC61851
+DIN70121
+ISO15118
+ISO15118_20
+```
+
+### `ConnectorTypeEnum`
+
+```text
+cCCS1  cCCS2  cG105  cTesla  cType1  cType2
+s309_1P_16A  s309_1P_32A  s309_3P_16A  s309_3P_32A
+sBS1361  sCEE_7_7  sType2  sType3
+Other1PhMax16A  Other1PhOver16A  Other3Ph
+Pan  wInductive  wResonant  Undetermined  Unknown
+```
+
+### `EnergyTransferModeEnum`
+
+```text
+AC_single_phase_core  AC_two_phase  AC_three_phase_core
+DC_core  DC_extended  DC_combo_core  DC_unique  DC
+AC_BPT  AC_BPT_DER  AC_DER  AC_DER_IEC  AC_DER_SAE
+DC_BPT  DC_ACDP  DC_ACDP_BPT  WPT
+```
+
+## Example Configuration
+
+The following snippet adds the RpcApi module to an EVerest configuration with a single EVSE manager, binding the WebSocket server to all network interfaces on port 8080:
+
+```yaml
+active_modules:
+  rpc_api:
+    module: RpcApi
+    config_module:
+      websocket_enabled: true
+      websocket_port: 8080
+      websocket_interface: "all"
+      websocket_tls_enabled: false
+      authentication_required: false
+      max_decimal_places_other: 2
+    connections:
+      evse_manager:
+        - module_id: evse_manager
+          implementation_id: evse
+      charger_information:
+        - module_id: charger_information
+          implementation_id: main
+```
+
+## Typical Client Initialization Sequence
+
+The following steps describe the recommended startup flow for an RpcApi client application.
+
+<Steps>
+  <Step title="Connect to the WebSocket endpoint">
+    Open a WebSocket connection to `ws://<host>:8080`. The connection must remain open for the duration of the session; the server pushes notifications over this same connection.
+  </Step>
+  <Step title="Send API.Hello within 5 seconds">
+    ```json
+    {"jsonrpc": "2.0", "method": "API.Hello", "id": 1}
+    ```
+    Parse the response to obtain `api_version` and `charger_info`. Store the `api_version` for compatibility checks.
+  </Step>
+  <Step title="Retrieve all EVSE information">
+    ```json
+    {"jsonrpc": "2.0", "method": "ChargePoint.GetEVSEInfos", "id": 2}
+    ```
+    Use the returned `index` values for all subsequent EVSE-specific calls. Use `supported_energy_transfer_modes` to determine whether each EVSE is AC or DC and set the UI accordingly.
+  </Step>
+  <Step title="Poll initial state for each EVSE">
+    For each EVSE index returned, call `EVSE.GetStatus`, `EVSE.GetHardwareCapabilities`, and `EVSE.GetMeterData` to build the initial display state before relying on notifications.
+  </Step>
+  <Step title="Process incoming notifications">
+    Handle `EVSE.StatusChanged`, `EVSE.MeterDataChanged`, `EVSE.HardwareCapabilitiesChanged`, and `ChargePoint.ActiveErrorsChanged` to keep the displayed state current without polling.
+  </Step>
+</Steps>

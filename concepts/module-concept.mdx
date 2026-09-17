@@ -1,0 +1,237 @@
+---
+title: 'Understanding EVerest Modules and Module Instances'
+sidebarTitle: 'Modules'
+description: 'EVerest modules are manifest-defined programs with typed config, provided interfaces, and required interfaces. Instances are wired in a run configuration.'
+---
+
+At the heart of EVerest is the module system — the mechanism that turns a collection of independent programs into a coherent, configurable charging station firmware stack. A module is a program that provides a well-defined set of capabilities (interface implementations) and depends on well-defined capabilities from other modules (interface requirements). Modules are described by manifest YAML files and instantiated at runtime according to a run configuration. Multiple instances of the same module can run simultaneously in the same deployment, each with its own configuration values and unique instance ID.
+
+## Modules vs. Module Instances
+
+The distinction between a module and a module instance maps directly to the class/object distinction in object-oriented programming:
+
+- A **module** is the program itself, identified by a unique module name assigned at development time (e.g., `EvseManager`, `EnergyManager`, `Auth`). Its capabilities and requirements are described in a `manifest.yaml` file.
+- A **module instance** is a running process launched from a module. It has a unique **instance ID** assigned in the run configuration (e.g., `connector_1`, `energy_manager`), independent of the module name.
+
+Multiple instances of the same module can exist in one deployment. For example, a two-EVSE charging station runs two instances of `EvseManager`, each with a different instance ID and potentially different configuration values.
+
+<CardGroup cols={2}>
+  <Card title="Module (program)" icon="file-code">
+    Defined by `manifest.yaml`. Has a fixed name, a set of provided interface implementations, a set of required interfaces, and typed config parameters.
+  </Card>
+  <Card title="Module Instance (process)" icon="play">
+    Launched from a module at runtime. Has a unique instance ID, concrete config values, and wired connections to other instances that satisfy its requirements.
+  </Card>
+</CardGroup>
+
+## Module Manifest Structure
+
+Every module must have a `manifest.yaml` file at `modules/{ModuleName}/manifest.yaml`. This file is the authoritative declaration of what the module is and what it needs. The following is a real example from the `EvseManager` module, showing the key sections:
+
+```yaml
+description: >-
+  EVSE Manager. Grid side power meter: Will be used for energy management.
+  Will also be used for billing if no car side power meter connected.
+
+config:
+  connector_id:
+    description: ID of this EVSE within the charging station (3-tier OCPP model)
+    type: integer
+  charge_mode:
+    description: Select charging mode
+    type: string
+    enum:
+      - AC
+      - DC
+    default: AC
+  ac_hlc_enabled:
+    description: Enable or disable HLC (ISO15118) for AC mode
+    type: boolean
+    default: false
+  evse_id:
+    description: EVSE ID in eMI3 format, e.g. DE*PNX*E1234567*1
+    type: string
+    default: DE*PNX*E1234567*1
+
+provides:
+  evse:
+    interface: evse_manager
+    description: This is the main evsemanager interface
+  energy_grid:
+    description: Tree leaf interface for the energy supply tree
+    interface: energy
+  token_provider:
+    description: Provides auth tokens for autocharge or plug and charge
+    interface: auth_token_provider
+
+requires:
+  bsp:
+    interface: evse_board_support
+  slac:
+    interface: slac
+    min_connections: 0
+    max_connections: 1
+  hlc:
+    interface: ISO15118_charger
+    min_connections: 0
+    max_connections: 1
+  powermeter_grid_side:
+    interface: powermeter
+    min_connections: 0
+    max_connections: 1
+
+enable_external_mqtt: true
+enable_telemetry: true
+
+metadata:
+  license: https://opensource.org/licenses/Apache-2.0
+  authors:
+    - Cornelius Claussen
+    - Anton Woellert
+```
+
+<Accordion title="Manifest section reference">
+
+| Section | Purpose |
+|---|---|
+| `description` | Human-readable description of what the module does |
+| `config` | Named, typed configuration parameters with optional defaults |
+| `provides` | Interface implementations this module exposes to others |
+| `requires` | Interface implementations this module needs from others |
+| `enable_external_mqtt` | Set `true` to allow direct MQTT access from module code |
+| `enable_telemetry` | Set `true` to enable telemetry data publication |
+| `enable_global_errors` | Set `true` to subscribe to errors across all modules |
+| `metadata` | License URL and author list |
+
+</Accordion>
+
+## Provides: Interface Implementations
+
+A module does not simply declare that it "implements" an interface. Instead, each entry under `provides` assigns a unique **implementation ID** to a specific interface. This allows a single module to implement the same interface multiple times with different IDs — for example, a simulated power path module might provide both a `board_support` and a `powermeter` implementation.
+
+```yaml
+provides:
+  evse:                      # implementation ID
+    interface: evse_manager  # interface name
+    description: Main EVSE manager interface
+  energy_grid:
+    interface: energy
+    description: Energy tree leaf interface
+```
+
+Callers reference an implementation by both the **module instance ID** and the **implementation ID**: `{module_id}/{implementation_id}`.
+
+## Requires: Interface Requirements
+
+Each entry under `requires` declares a named requirement with a unique **requirement ID** and the interface it must be satisfied by. The run configuration later wires these requirements to the correct providing module instances.
+
+```yaml
+requires:
+  bsp:                          # requirement ID
+    interface: evse_board_support
+  slac:
+    interface: slac
+    min_connections: 0          # optional: 0 means the requirement is optional
+    max_connections: 1
+```
+
+When `min_connections` is `0`, the requirement is optional — the module starts even if nothing is connected.
+
+## The Run Configuration
+
+The run configuration (a YAML file passed to the manager via `--config`) wires module instances together. It defines which modules to start as instances, their config values, and how their requirements map to providers.
+
+The following snippet is taken from `config/config-sil.yaml` — EVerest's default Software-in-the-Loop simulation configuration:
+
+```yaml
+settings:
+  telemetry_enabled: true
+
+active_modules:
+
+  connector_1:                        # instance ID
+    module: EvseManager               # module name
+    config_module:                    # module-level config values
+      connector_id: 1
+      charge_mode: AC
+      ac_hlc_enabled: true
+      evse_id: DE*PNX*E12345*1
+      session_logging: true
+      session_logging_path: /tmp/everest-logs
+    connections:                      # requirement → provider wiring
+      bsp:
+        - implementation_id: board_support
+          module_id: connector_1_powerpath
+      hlc:
+        - implementation_id: charger
+          module_id: iso15118_charger
+      powermeter_grid_side:
+        - implementation_id: powermeter
+          module_id: connector_1_powerpath
+      slac:
+        - implementation_id: evse
+          module_id: slac
+
+  energy_manager:
+    module: EnergyManager
+    config_module:
+      schedule_interval_duration: 60
+      schedule_total_duration: 10
+      debug: false
+    connections:
+      energy_trunk:
+        - implementation_id: energy_grid
+          module_id: grid_connection_point
+```
+
+Each `connections` entry maps a requirement ID from the module's manifest to the instance ID and implementation ID of the module that satisfies it.
+
+## Generated C++ Code Structure
+
+When you run `ev-cli module create` (or `ev-cli generate-headers`) against a manifest, it produces a typed C++ skeleton that directly reflects the manifest structure. The file layout for a module named `PingServerModule` with an implementation `if_impl_id_ping` looks like this:
+
+```text
+modules/
+└── PingServerModule/
+    ├── CMakeLists.txt
+    ├── PingServerModule.cpp      # init() and ready() stubs
+    ├── PingServerModule.hpp      # module class with config, mqtt, p_*, r_* members
+    └── if_impl_id_ping/
+        ├── interface_pingImpl.cpp  # command handler stubs
+        └── interface_pingImpl.hpp  # implementation class
+```
+
+The module class in `PingServerModule.hpp` contains:
+
+- `config` of type `Conf` — typed config values from the manifest
+- `p_{impl_id}` — `std::unique_ptr` to each interface implementation
+- `r_{req_id}` — `std::unique_ptr` to each required interface proxy
+- `init()` and `ready()` — lifecycle hooks called by the framework
+
+```cpp
+void PingServerModule::init() {
+    invoke_init(*p_if_impl_id_ping);
+}
+
+void PingServerModule::ready() {
+    invoke_ready(*p_if_impl_id_ping);
+}
+```
+
+<Note>
+  `PingServerModule.cpp` is not overwritten by `ev-cli module update`. `PingServerModule.hpp` is regenerated but preserves code inside designated comment regions. Always add custom members to the designated areas to survive updates.
+</Note>
+
+## Concurrency Model
+
+The EVerest framework runs multiple threads on behalf of each module simultaneously:
+
+- One thread executes the module's `ready()` function (you may block here or spawn workers)
+- A thread pool handles incoming CMD requests (calls your `handle_{command}()` methods)
+- A thread pool dispatches VAR subscription callbacks (calls your `subscribe_{var}()` callbacks)
+
+Assume that command handlers and variable callbacks may be invoked concurrently. Shared state between these callbacks requires explicit synchronization (mutexes or atomics).
+
+<Warning>
+  Never perform blocking operations inside a VAR subscription callback or a command handler without careful consideration. Blocking a handler thread delays all subsequent commands or variable updates on the same pool.
+</Warning>

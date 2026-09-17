@@ -1,0 +1,272 @@
+---
+title: 'EVerest YAML Configuration File Format Reference Guide'
+sidebarTitle: 'Config YAML'
+description: 'Reference for the EVerest YAML config file: active_modules structure, module instances, configuration parameters, connections, and user-config overlays.'
+---
+
+Every EVerest deployment is described by a YAML configuration file. The file tells the manager which module instances to spawn, how to wire their interfaces together, and what configuration parameters each instance should receive. This document covers the complete structure of that file, from the top-level keys down to individual parameter and connection entries, with annotated examples drawn directly from the built-in configurations.
+
+<Note>
+  The YAML file can contain both **manager settings** (MQTT host, database paths, telemetry toggles) and **module configuration** (the `active_modules` section). When a YAML file is loaded into a configuration slot via the Configuration API, only the `active_modules` section is stored — manager settings are ignored. It is therefore not possible to reconstruct the original YAML from the database slot alone.
+</Note>
+
+---
+
+## Top-Level Structure
+
+A configuration file has two top-level keys: `settings` and `active_modules`.
+
+```yaml
+settings:
+  telemetry_enabled: true        # manager-level settings (optional)
+
+active_modules:
+  <module-instance-id>:          # user-chosen identifier for this instance
+    module: <ModuleName>         # the module type to load
+    config_module: { ... }       # module-level config parameters (optional)
+    config_implementation:       # per-implementation config parameters (optional)
+      <implementation-id>:
+        <param>: <value>
+    connections:                 # fulfil requirements by wiring to other instances
+      <requirement-id>:
+        - module_id: <instance>
+          implementation_id: <impl>
+    telemetry:                   # optional telemetry metadata
+      id: <integer>
+```
+
+The `active_modules` key is the only mandatory section. An empty or missing `active_modules` section causes the manager to exit with an error (or enter `Idle` if `--into-idle` or `--idle-on-failure` are set).
+
+---
+
+## Module Instance Definition
+
+Each entry under `active_modules` is a **module instance**. The key is the **module instance ID** — a free-form string that uniquely identifies this instance within the configuration. The same module type can be instantiated multiple times under different IDs (for example, two independent `EvseManager` instances for a two-connector station).
+
+<ParamField path="module" type="string" required>
+  The module type name. This must match the name of a module manifest installed at the EVerest prefix. Example: `EvseManager`, `Auth`, `EnergyManager`, `YetiSimulator`.
+</ParamField>
+
+<ParamField path="config_module" type="object">
+  Key-value map of module-level configuration parameters. These correspond to parameters declared in the module's manifest under `config`. All values must match the declared data type.
+</ParamField>
+
+<ParamField path="config_implementation" type="object">
+  A nested map: the first level is the **implementation ID** (as declared in the module's manifest), and the second level is key-value pairs of implementation-level configuration parameters. Used when a module exposes multiple interface implementations, each with their own parameters.
+</ParamField>
+
+<ParamField path="connections" type="object">
+  Wires this module's **requirements** to **fulfillments** provided by other module instances. The key is the requirement ID (as declared in the manifest); the value is a list of fulfillments. See [Connection Syntax](#connection-syntax) below.
+</ParamField>
+
+<ParamField path="telemetry" type="object">
+  Optional metadata attached to the instance for telemetry purposes. The `id` field is an integer connector/instance identifier used by telemetry back-ends.
+</ParamField>
+
+---
+
+## Connection Syntax
+
+A **connection** wires one of this module's declared requirements to an implementation provided by another module instance. Every entry in the `connections` map is a list so that multi-fulfillment requirements can be satisfied by multiple providers.
+
+```yaml
+connections:
+  <requirement-id>:
+    - module_id: <target-instance-id>
+      implementation_id: <target-implementation-id>
+```
+
+<ParamField path="module_id" type="string" required>
+  The instance ID of the module that provides the required interface. This must match a key under `active_modules`.
+</ParamField>
+
+<ParamField path="implementation_id" type="string" required>
+  The implementation ID within the target module that satisfies the requirement. This must match an implementation declared in the target module's manifest.
+</ParamField>
+
+A module with no requirements can omit `connections` entirely or set it to an empty map (`connections: {}`).
+
+---
+
+## Annotated Example: config-example.yaml
+
+The minimal `config-example.yaml` shipped with EVerest demonstrates the core concepts with three modules:
+
+```yaml
+settings:
+  telemetry_enabled: true
+
+active_modules:
+  store:                      # Instance ID: "store"
+    module: Store             # Module type with no config or connections needed
+
+  example:                    # Instance ID: "example"
+    module: Example
+    config_implementation:    # Per-implementation parameters
+      example:                # Implementation ID: "example"
+        current: 42           # Decimal parameter
+        enum_test: one        # Enum parameter
+        enum_test2: 2         # Integer parameter
+    connections:
+      kvs:                    # Requirement: "kvs" (key-value store)
+        - module_id: store          # Fulfilled by the "store" instance
+          implementation_id: main   # Using its "main" implementation
+
+  example_user:               # Instance ID: "example_user"
+    module: ExampleUser
+    connections:
+      example:                # Requirement: "example"
+        - module_id: example        # Fulfilled by the "example" instance
+          implementation_id: example
+```
+
+---
+
+## Annotated Example: config-sil.yaml (excerpt)
+
+The `config-sil.yaml` Software-in-the-Loop configuration shows a full AC charging station stack. The excerpt below highlights `config_module`, multi-fulfillment connections, and the `telemetry` key:
+
+```yaml
+active_modules:
+  connector_1:
+    module: EvseManager
+    telemetry:
+      id: 1                       # Connector telemetry ID
+    config_module:
+      connector_id: 1
+      charge_mode: AC
+      ac_nominal_voltage: 230
+      ac_hlc_enabled: true        # High-Level Communication (ISO 15118) enabled
+      ac_hlc_use_5percent: false
+      ac_enforce_hlc: false
+      evse_id: DE*PNX*E12345*1
+      has_ventilation: true
+      payment_enable_eim: true
+      payment_enable_contract: true
+      session_logging: true
+      session_logging_path: /tmp/everest-logs
+      session_logging_xml: false
+      switch_3ph1ph_delay_s: 5
+      switch_3ph1ph_cp_state: X1
+    connections:
+      bsp:                        # Board support requirement
+        - implementation_id: board_support
+          module_id: connector_1_powerpath
+      hlc:                        # High-Level Communication requirement
+        - implementation_id: charger
+          module_id: iso15118_charger
+      powermeter_grid_side:
+        - implementation_id: powermeter
+          module_id: connector_1_powerpath
+      slac:
+        - implementation_id: evse
+          module_id: slac
+      ac_rcd:
+        - implementation_id: rcd
+          module_id: connector_1_powerpath
+      connector_lock:
+        - implementation_id: connector_lock
+          module_id: connector_1_powerpath
+
+  auth:
+    module: Auth
+    config_module:
+      connection_timeout: 10
+      selection_algorithm: FindFirst
+      prioritize_authorization_over_stopping_transaction: true
+      ignore_connector_faults: true
+    connections:
+      evse_manager:               # Requires an EVSE manager — fulfilled by connector_1
+        - implementation_id: evse
+          module_id: connector_1
+      token_provider:             # Token provider chain
+        - implementation_id: main
+          module_id: token_provider
+      token_validator:
+        - implementation_id: main
+          module_id: token_validator
+
+  error_history:
+    module: ErrorHistory
+    config_implementation:        # Per-implementation config on "error_history" impl
+      error_history:
+        database_path: /tmp/error_history.db
+
+  evse_security:
+    module: EvseSecurity
+    config_module:
+      private_key_password: "123456"
+
+  iso15118_charger:
+    module: EvseV2G
+    config_module:
+      device: auto
+      tls_security: allow
+      supported_DIN70121: false
+    connections:
+      security:
+        - module_id: evse_security
+          implementation_id: main
+
+  slac:
+    module: SlacSimulator          # No config_module or connections needed
+```
+
+---
+
+## User-Config Overlay
+
+When running without a persistent database (`--db` not set), the manager writes runtime configuration changes to a **user-config overlay file** instead of the in-memory slot. The overlay file is located at:
+
+```text
+<config-directory>/user-config/<config-name>.yaml
+```
+
+The overlay file has the same structure as the main config file but only needs to contain the keys that differ from the base config. On startup the manager deep-merges the overlay on top of the base config before seeding the in-memory database. This allows operators to customise a shipped base config without modifying it directly, and the overlay survives manager restarts.
+
+<Note>
+  With `--db` the user-config overlay is not used. All runtime writes go to the database slot instead, and the YAML file is only consulted at first seed or when `--reset-from-yaml` is passed.
+</Note>
+
+---
+
+## Validating a Configuration
+
+Use the `--check` flag to validate all config files without starting any modules:
+
+```bash
+manager --config /path/to/config-sil.yaml --check
+```
+
+Exit code `0` means every referenced module was found, all connections resolve to declared interface types, and all parameter values pass their declared data type checks. A non-zero exit code prints the first validation error encountered.
+
+The `--dump` flag writes the fully merged and augmented configuration to a directory for inspection:
+
+```bash
+manager --config /path/to/config-sil.yaml --dump /tmp/everest-dump
+ls /tmp/everest-dump/
+# main_config.json  Auth.json  EvseManager.json  ...
+```
+
+---
+
+## x-module-layout (UI Metadata)
+
+The `x-module-layout` top-level key is an extension used exclusively by graphical configuration editors (such as the EVerest Node-RED admin panel) to persist the position of module nodes and their terminal arrangement on the canvas. It has no effect on manager behaviour and is ignored at runtime.
+
+```yaml
+'x-module-layout':
+  connector_1:
+    position:
+      x: 13
+      y: 23
+    terminals:
+      top:
+        - id: evse
+          interface: evse_manager
+          type: provide
+      left:
+        - id: hlc
+          interface: ISO15118_charger
+          type: requirement
+```

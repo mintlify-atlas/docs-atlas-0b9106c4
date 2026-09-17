@@ -1,0 +1,201 @@
+---
+title: 'EVerest Manager Binary: Full Command-Line Reference'
+sidebarTitle: 'manager CLI'
+description: 'Complete reference for every command-line option of the EVerest manager binary — the process that spawns, supervises, and manages all module processes.'
+---
+
+The EVerest `manager` binary is the single long-lived process at the heart of every EVerest deployment. It reads the configuration, spawns all module child processes, supervises their health, exposes the Configuration API and Lifecycle API over MQTT, and coordinates graceful or forced shutdown. Everything that drives EVerest — module topology, boot configuration, crash recovery, diagnostics — is controlled through the options documented on this page.
+
+<Note>
+  Option abbreviation is disabled: every option must be spelled out in full.
+  `--conf` is therefore **not** an abbreviation of `--config` — it is a separate, deprecated option. Passing both at once is rejected as ambiguous.
+</Note>
+
+<Warning>
+  Options marked **Experimental** are part of the public surface but are exempt from EVerest's stability guarantees and the normal deprecation period. They may change incompatibly or be removed in any release. The manager emits a warning at startup listing every experimental option it received.
+</Warning>
+
+---
+
+## General
+
+<ParamField path="--version" type="flag">
+  Print the manager version string and exit.
+</ParamField>
+
+<ParamField path="--help / -h" type="flag">
+  Print the help message listing all options and exit.
+</ParamField>
+
+<ParamField path="--check" type="flag">
+  Validate all configuration files without starting any modules. Exits with code `0` on success and a non-zero code on any validation error. Use this in CI pipelines or before deploying a new config:
+
+  ```bash
+  manager --config /etc/everest/config-production.yaml --check
+  ```
+</ParamField>
+
+<ParamField path="--prefix" type="path">
+  Override the prefix path of the EVerest installation. Affects where the manager looks for module executables, manifests, and default configuration files.
+</ParamField>
+
+---
+
+## Configuration and Storage
+
+<ParamField path="--config" type="path">
+  Full path to the YAML configuration file. If the path has no extension and the file does not exist at the given location, the manager looks it up in the default config directory. Optional — falls back to the default config file in the default config directory.
+
+  Without `--db`, the YAML file is the authoritative source on every start: it is parsed fresh each time and runtime configuration writes are persisted to `user-config/<config-name>.yaml`.
+</ParamField>
+
+<ParamField path="--conf" type="path" deprecated>
+  **Deprecated.** Identical to `--config`. Using `--conf` logs a deprecation warning at startup. Do not pass both `--conf` and `--config` — that combination is rejected as ambiguous.
+</ParamField>
+
+<ParamField path="--db" type="path">
+  Full path to a SQLite configuration database file. Without this option an in-memory database is used and the YAML config is re-seeded on every start.
+
+  When both `--config` and `--db` are given, the database wins if it already holds a valid configuration; otherwise it is seeded from the YAML file. This allows seamless promotion from a file-based workflow to a fully database-backed deployment:
+
+  ```bash
+  # First run: seeds the database from the YAML file
+  manager --config config-sil.yaml --db /var/lib/everest/everest.db
+
+  # Subsequent runs: database is authoritative
+  manager --config config-sil.yaml --db /var/lib/everest/everest.db
+  ```
+</ParamField>
+
+<ParamField path="--reset-from-yaml" type="flag" experimental>
+  **Experimental.** Discard the existing database slot and re-seed from the YAML config file. Intended for development use to reset back to a known YAML state. Requires `--config`.
+
+  ```bash
+  manager --config config-sil.yaml --db everest.db --reset-from-yaml
+  ```
+</ParamField>
+
+<ParamField path="--db-init" type="flag" deprecated>
+  **Deprecated. No effect.** Seeding the database from the YAML file when it holds no valid configuration is now the default behavior. This flag is silently ignored unless both `--config` and `--db` are given. Use `--reset-from-yaml` to force re-seeding.
+</ParamField>
+
+---
+
+## Module Lifecycle
+
+<ParamField path="--standalone / -s" type="module-id...">
+  One or more module IDs that the manager should **not** automatically spawn as child processes. Those modules must be started manually (for example during development or testing) before the framework will proceed to `Running`. Accepts multiple space-separated values:
+
+  ```bash
+  manager --config my_config.yaml --standalone my_custom_module
+  ```
+</ParamField>
+
+<ParamField path="--ignore" type="module-id...">
+  One or more module IDs to skip entirely — no child process is spawned, and the manager does not wait for them to be ready. Accepts multiple space-separated values. Useful for temporarily disabling a module without editing the config file.
+</ParamField>
+
+<ParamField path="--into-idle" type="flag" experimental>
+  **Experimental.** Boot directly into the `Idle` state: no modules are started, but the Configuration API and Lifecycle API are immediately available. The manager also enters `Idle` (instead of exiting with an error) when the configuration is invalid, missing, or contains no modules. This is the entry point for the OTA or cloud-managed bootstrap workflow where a configuration is pushed over the API before modules are started.
+</ParamField>
+
+<ParamField path="--idle-on-failure" type="flag" experimental>
+  **Experimental.** When there is nothing startable — the boot configuration is invalid or empty, crash recovery is exhausted, or a configuration reload fails during a restart — keep the manager alive in `Idle` instead of exiting with an error. The Configuration API remains accessible so a corrected configuration can be loaded remotely before requesting a restart.
+</ParamField>
+
+<ParamField path="--recover-module-crashes" type="flag" experimental>
+  **Experimental.** After an unexpected module exit, reload the configuration and restart all modules, bounded by an internal retry cap. Default behavior without this flag: drain all remaining modules and exit the manager with a failure code.
+
+  Once the retry cap is exhausted the manager exits with failure, or stays in `Idle` if `--idle-on-failure` was also passed.
+</ParamField>
+
+<ParamField path="--graceful-shutdown" type="flag" experimental>
+  **Experimental.** On any shutdown trigger — `SIGINT`/`SIGTERM`, unexpected module exit, or administrative restart — publish the MQTT shutdown signal on `<mqtt_everest_prefix>shutdown` (QOS 2, not retained) so that modules can run their registered shutdown handlers and exit cleanly. Module processes that do not exit within the graceful shutdown timeout are force-terminated via `SIGTERM` escalating to `SIGKILL`.
+
+  Default behavior without this flag: module processes are terminated immediately with `SIGTERM`/`SIGKILL` and the drain deadline is zero.
+</ParamField>
+
+---
+
+## Diagnostics and Debugging
+
+<ParamField path="--dump" type="dir">
+  Write the validated and augmented main config plus all module manifests referenced by that config into the specified directory. Useful for inspecting exactly what the manager sees after all YAML merges and schema defaults are applied.
+</ParamField>
+
+<ParamField path="--dumpmanifests" type="dir">
+  Write the manifests of **all** installed modules — including modules not referenced by the active config — into the specified directory, then exit. Useful for auditing available modules.
+</ParamField>
+
+<ParamField path="--dontvalidateschema" type="flag">
+  Disable JSON schema validation on every MQTT message. Can improve throughput during high-volume testing but removes a safety net that catches malformed inter-module messages early.
+</ParamField>
+
+<ParamField path="--status-fifo" type="path">
+  Path to a named FIFO (created with `mkfifo`) that the manager writes single-line status events to. Tests and integration tooling can block-read this pipe instead of parsing manager log output. The FIFO must already exist and be open for reading before the manager starts; if a write fails at runtime the FIFO is silently disabled for the remainder of the run.
+
+  **State notifications** written to the FIFO:
+  - `MANAGER_INITIALIZING`, `MANAGER_STARTING_MODULES`, `MANAGER_RUNNING`
+  - `MANAGER_RESTART_REQUESTED`, `MANAGER_CRASH_SHUTDOWN_IN_PROGRESS`
+  - `MANAGER_SHUTDOWN_REQUESTED`, `MANAGER_FORCE_TERMINATING`
+  - `MANAGER_SHUTDOWN_FINALIZING`, `MANAGER_IDLE`, `MANAGER_EXITING`
+
+  **Semantic events:**
+  - `ALL_MODULES_STARTED` — all non-ignored modules reported ready and `Running` was entered
+  - `WAITING_FOR_STANDALONE_MODULES` — manager-spawned modules ready; standalone modules pending
+  - `SIGINT_RECEIVED` — first `SIGINT`/`SIGTERM` received
+  - `ALL_MODULES_STOPPED_CLEAN` — normal shutdown with no unclean exits
+  - `FORCE_SHUTDOWN_TIMEOUT` — graceful deadline exceeded; force-terminate path started
+  - `CRASH_RECOVERY_ATTEMPT:n/max` — crash recovery reload and restart attempt
+  - `CRASH_RECOVERY_EXHAUSTED` — retry cap exceeded
+</ParamField>
+
+<ParamField path="--retain-topics" type="flag">
+  Retain the MQTT configuration topics that the manager sets up during startup, leaving them available for inspection with any MQTT client after startup completes. By default these topics are cleared once all modules have started.
+</ParamField>
+
+<ParamField path="--mqtt_everest_prefix" type="prefix">
+  Override the MQTT topic prefix used by EVerest. Useful when running multiple independent EVerest instances against the same MQTT broker, for example in a multi-EVSE test rig:
+
+  ```bash
+  manager --config config-sil.yaml --mqtt_everest_prefix everest_instance_2/
+  ```
+</ParamField>
+
+---
+
+## Common Invocation Patterns
+
+<CodeGroup>
+```bash YAML-only (development)
+# YAML is authoritative; in-memory database, re-seeded on every start
+manager --config /path/to/config-sil.yaml
+```
+
+```bash Database-backed (production)
+# Database wins once seeded; YAML is the fallback for first run
+manager --config /path/to/config-sil.yaml --db /var/lib/everest/everest.db
+```
+
+```bash Force YAML re-import
+# Discard database state and re-seed from YAML
+manager --config /path/to/config-sil.yaml --db everest.db --reset-from-yaml
+```
+
+```bash OTA / cloud-managed bootstrap
+# Start in Idle; push config via Configuration API; then start modules remotely
+manager --configuration-api=rw --lifecycle-api=rw \
+        --db /var/lib/everest/everest.db --into-idle
+```
+
+```bash Resilient production with crash recovery
+# Recover from module crashes; stay alive in Idle if recovery exhausted
+manager --config config-sil.yaml --db everest.db \
+        --recover-module-crashes --idle-on-failure --graceful-shutdown
+```
+
+```bash Validate config in CI
+manager --config /path/to/config.yaml --check
+echo "Exit code: $?"
+```
+</CodeGroup>

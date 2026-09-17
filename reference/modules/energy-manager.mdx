@@ -1,0 +1,163 @@
+---
+title: 'EnergyManager Module: Smart Charging and Energy Limits'
+sidebarTitle: 'EnergyManager'
+description: 'EnergyManager distributes power across EVSEs via a configurable energy tree, integrating OCPP smart-charging profiles, solar limits, and 3-phase switching.'
+---
+
+The `EnergyManager` module is EVerest's global power distribution brain. It operates on a tree of energy nodes — each node representing a physical or logical element in the energy system (fuse, grid connection, EVSE) — and continuously computes and enforces optimal current or power limits across all connected charging stations. The tree model accommodates arbitrarily complex site topologies: a single EVSE on a domestic supply, a multi-EVSE charging park behind a shared fuse, or a building with solar generation and battery storage can all be represented and managed with the same algorithm.
+
+## How It Works
+
+Every update cycle (default: 1 second), the EnergyManager:
+
+1. **Collects energy flow requests** from all leaf nodes (EvseManagers) via the `energy` interface. Each request describes how much current the EVSE wants to use and any hard limits it is aware of.
+2. **Aggregates constraints** up the tree — each EnergyNode applies its fuse rating, external schedule limits, and powermeter readings as it passes requests upward.
+3. **Runs the distribution algorithm** at the root, trading available amperes or watts among charging EVSEs in slices (`slice_ampere` or `slice_watt`), ensuring no fuse or external limit is violated.
+4. **Pushes `enforced_limits`** back down the tree to each EvseManager, which adjusts its PWM duty cycle (AC) or power-supply setpoint (DC) accordingly.
+
+## The Energy Tree
+
+The energy tree is assembled at startup from the module connections in your EVerest config file. A typical single-phase flat topology looks like:
+
+```text
+EnergyManager (root)
+    └── EnergyNode (site fuse: 32 A)
+            ├── EvseManager EVSE-1 (energy_grid interface)
+            └── EvseManager EVSE-2 (energy_grid interface)
+```
+
+In more complex sites, multiple EnergyNode levels can be stacked:
+
+```text
+EnergyManager (root)
+    └── EnergyNode (grid connection: 100 A)
+            ├── EnergyNode (charging park fuse: 63 A)
+            │       ├── EvseManager EVSE-1
+            │       └── EvseManager EVSE-2
+            └── EnergyNode (fast-charger feed: 50 A)
+                    └── EvseManager EVSE-3
+```
+
+## EnergyNode Module
+
+The `EnergyNode` module represents an intermediate node in the energy tree — typically a physical AC fuse or a logical grouping point. Each EnergyNode:
+
+- Enforces a **fuse limit** (`fuse_limit_A`) that caps the total current drawn through it regardless of what child nodes request.
+- Optionally connects to a **powermeter** to report actual measured consumption up the tree for improved scheduling accuracy.
+- Optionally connects to an **external energy limits** interface, allowing an OCPP smart-charging schedule or an external building management system to inject additional limits.
+- Supports **phase rotation correction** via the `phase_rotation` config option to correct for physical L1/L2/L3 wiring mismatches at the powermeter.
+
+### EnergyNode Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `fuse_limit_A` | number | — | Maximum current through this node across all phases (required) |
+| `phase_count` | integer | `3` | Number of phases at this node (1–3) |
+| `nominal_voltage_V` | number | `230.0` | Nominal phase-to-neutral voltage in volts (used for W→A conversion) |
+| `enhance_external_schedule` | boolean | `false` | Derive per-phase current limits from `total_power_W` in external schedules when `ac_max_current_A` is absent |
+| `phase_rotation` | enum | `RST` | Phase rotation correction: `RST` (none), `STR`, or `TRS` |
+
+### EnergyNode Provided Interfaces
+
+| Implementation key | Interface | Description |
+|--------------------|-----------|-------------|
+| `energy_grid` | `energy` | Chain interface connecting this node to its parent (EnergyManager or another EnergyNode) |
+| `external_limits` | `external_energy_limits` | Accept externally-set limits (from OCPP smart charging, solar controller, etc.) |
+
+## EnergyManager Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `nominal_ac_voltage` | number | `230.0` | AC voltage used for ampere-to-watt conversions |
+| `update_interval` | integer | `1` | Energy distribution update cycle in seconds |
+| `schedule_interval_duration` | integer | `60` | Duration of each schedule forecast interval in minutes |
+| `schedule_total_duration` | integer | `1` | Total forecast horizon in hours |
+| `slice_ampere` | number | `0.5` | Ampere increment for distributing current among EVSEs (lower = fairer but more CPU) |
+| `slice_watt` | number | `500` | Watt increment for distributing power among EVSEs |
+| `debug` | boolean | `false` | Print detailed distribution decisions to the console |
+
+### 3-Phase / 1-Phase Switching
+
+The EnergyManager can orchestrate automatic switching between three-phase and single-phase AC charging to optimize utilization at low available power levels. This feature requires BSP support for phase switching (reported in the EVSE hardware capabilities).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `switch_3ph1ph_while_charging_mode` | enum | `Never` | `Never` disables switching; `Oneway` switches 3→1 only; `Both` switches in both directions |
+| `switch_3ph1ph_max_nr_of_switches_per_session` | integer | `0` | Maximum number of switches per session (0 = unlimited) |
+| `switch_3ph1ph_switch_limit_stickyness` | enum | `DontChange` | Behavior after the switch limit is reached: `SinglePhase`, `ThreePhase`, or `DontChange` |
+| `switch_3ph1ph_power_hysteresis_W` | integer | `200` | Power band around the 1ph/3ph switchover threshold to prevent oscillation |
+| `switch_3ph1ph_time_hysteresis_s` | integer | `600` | Seconds the 3ph-capable condition must be stable before switching back from 1ph to 3ph |
+
+<Note>
+Phase switching is only possible during basic (non-HLC) AC charging. The BSP must report `supports_changing_phases_during_charging: true` in its hardware capabilities. Some EV models may be permanently damaged by improper phase switching — always verify EV compatibility before enabling this feature.
+</Note>
+
+## OCPP Smart Charging Integration
+
+OCPP smart charging profiles are translated into `external_energy_limits` that flow down the energy tree. When an OCPP module receives a `SetChargingProfile` command from the CSMS, it:
+
+1. Converts the composite charging schedule (in Amps or Watts) into EVerest `ExternalLimits`.
+2. Publishes them via its `evse_energy_sink` connections to the `external_limits` interface of the relevant EnergyNode(s).
+3. The EnergyNode incorporates these limits into the next distribution cycle, capping any EVSE to the CSMS-mandated level.
+
+The `CompositeScheduleIntervalS` and `RequestCompositeScheduleDurationS` parameters on the OCPP module control how often and how far ahead the schedule is republished.
+
+<Tip>
+Set `RequestCompositeScheduleUnit` to `A` (Amps) for AC charging stations and `W` (Watts) for DC — the EnergyManager handles unit conversion internally using the configured `nominal_ac_voltage`.
+</Tip>
+
+## Solar and Grid Support
+
+External energy sources and building management systems connect to the energy tree through the `external_energy_limits` interface on EnergyNode modules. A solar inverter controller or a demand-response system can lower the available limit at any EnergyNode in real time, and the EnergyManager will re-distribute available power to EVSEs within the new constraint.
+
+The `EEBUS` module (in `EnergyManagement/EEBUS/`) implements the EEBUS/SHIP/SPINE protocol stack and exposes an `external_energy_limits` interface, enabling direct integration with home energy management systems (HEMS) that speak EEBUS.
+
+## Example Configuration Snippet
+
+The following fragment from an EVerest config YAML illustrates a two-EVSE deployment behind a 32 A fuse:
+
+```yaml
+active_modules:
+  energy_manager:
+    module: EnergyManager
+    config_implementation:
+      main:
+        update_interval: 1
+        slice_ampere: 0.5
+        nominal_ac_voltage: 230.0
+
+  energy_node:
+    module: EnergyNode
+    config_implementation:
+      energy_grid:
+        fuse_limit_A: 32.0
+        phase_count: 3
+    connections:
+      energy_consumer:
+        - module_id: evse1
+          implementation_id: energy_grid
+        - module_id: evse2
+          implementation_id: energy_grid
+
+  evse1:
+    module: EvseManager
+    connections:
+      bsp:
+        - module_id: yeti_driver
+          implementation_id: board_support
+    # ... other connections
+
+  evse2:
+    module: EvseManager
+    # ...
+```
+
+The EnergyManager is connected to the `energy_grid` output of the EnergyNode via its `energy_trunk` requirement:
+
+```yaml
+  energy_manager:
+    connections:
+      energy_trunk:
+        - module_id: energy_node
+          implementation_id: energy_grid
+```

@@ -1,47 +1,232 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: 'Get Started with EVerest in Software'
+sidebarTitle: 'SW Quickstart'
+description: 'Build EVerest from source on Linux, then run a full AC software-in-the-loop simulation with a Node-RED control UI — no hardware required.'
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through setting up a native Linux development environment, building EVerest from the mono-repository, and launching a software-in-the-loop (SIL) simulation of a complete AC charging station — with a real Node-RED user interface for interacting with simulated charging sessions. No hardware is required.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  If you are on macOS or Windows, or want a zero-setup experience on Linux, EVerest ships a ready-to-use development container. See the [Dev Container tutorial](#dev-container-alternative) at the bottom of this page for VS Code and `devrd` CLI variants.
+</Note>
 
 ## Prerequisites
 
-Before you begin, you must have:
+Before building, confirm the following general requirements are met on your machine:
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
+- **Python** 3.6 or newer
+- **Jinja2** and **PyYAML** Python packages
+- **GCC 9** or newer (GCC is the officially supported compiler; Clang 12+ has been used but is not officially supported)
+- **CMake** 3.14 or newer
+- **Docker** and **Docker Compose** V2 (required to run the MQTT broker and Node-RED containers during simulation)
 
-## Get started
+## Install System Dependencies
+
+<Tabs>
+  <Tab title="Ubuntu 24.04+">
+    Ubuntu 24.04 or newer is the recommended Debian-based distribution. Ubuntu 20.04 and 22.04 may no longer be supported.
+
+    ```bash
+    sudo apt update
+    sudo apt install -y python3-pip python3-venv git rsync wget cmake doxygen \
+      graphviz build-essential clang-tidy cppcheck openjdk-17-jdk npm docker.io \
+      docker-compose libboost-all-dev nodejs libssl-dev libsqlite3-dev \
+      clang-format curl rfkill libpcap-dev libevent-dev pkg-config libcap-dev \
+      libsystemd-dev
+    ```
+  </Tab>
+  <Tab title="OpenSUSE">
+    ```bash
+    zypper update && zypper install -y sudo shadow
+    zypper install -y --type pattern devel_basis
+    zypper install -y git rsync wget cmake doxygen graphviz clang-tools cppcheck \
+     boost-devel libboost_filesystem-devel libboost_log-devel \
+     libboost_program_options-devel libboost_system-devel libboost_thread-devel \
+     java-17-openjdk java-17-openjdk-devel nodejs nodejs-devel npm python3-devel \
+     python3-pip gcc-c++ libopenssl-devel sqlite3-devel libpcap-devel \
+     libevent-devel libcap-devel systemd-devel
+    ```
+  </Tab>
+  <Tab title="Fedora 40/41/42">
+    ```bash
+    sudo dnf update
+    sudo dnf install make automake gcc gcc-c++ kernel-devel python3-pip python3-devel \
+     git rsync wget cmake doxygen graphviz clang-tools-extra cppcheck java-21-openjdk \
+     java-21-openjdk-devel boost-devel nodejs nodejs-devel npm openssl openssl-devel \
+     libsqlite3x-devel curl rfkill libpcap-devel libevent-devel libcap-devel
+    ```
+  </Tab>
+</Tabs>
+
+## Build and Run EVerest
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Configure Environment Variables">
+    EVerest uses [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) to fetch external dependencies at build time. Setting `CPM_SOURCE_CACHE` prevents repeated downloads across builds. Add both variables to your shell profile (e.g. `~/.bashrc` or `~/.zshrc`) and source it:
 
     ```bash
-    npm install your-package
+    export CPM_SOURCE_CACHE=$HOME/.cache/CPM
+    export PATH=$PATH:/home/$(whoami)/.local/bin
+    ```
+
+    <Note>
+      The EVerest Dependency Manager (`edm`) was previously used to manage dependencies. For releases from 2026 onwards, manual `edm` installation is no longer recommended — CPM handles everything automatically as part of the CMake build.
+    </Note>
+  </Step>
+
+  <Step title="Clone the Repository">
+    EVerest is structured as a quasi-mono-repository. All modules and libraries are included or fetched automatically — no manual dependency checkout is required.
+
+    ```bash
+    git clone https://github.com/EVerest/EVerest
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Build with CMake">
+    Create a build directory, configure with CMake, and compile. The `install` target places built binaries and run scripts into `build/dist/`.
 
     ```bash
-    your-cli init
+    mkdir build && cd build
+    cmake ../EVerest/
+    make -j$(nproc) install
+    ```
+
+    The build will fetch and compile all declared dependencies via CPM on first run. Subsequent builds use the `CPM_SOURCE_CACHE` and are significantly faster.
+  </Step>
+
+  <Step title="Start the MQTT Broker">
+    EVerest modules communicate via MQTT. The simulation uses a mosquitto broker running in Docker. First, create the shared Docker network that lets local containers and EVerest communicate:
+
+    ```bash
+    docker network create --driver bridge --ipv6 \
+      --subnet fd00::/80 infranet_network --attachable
+    ```
+
+    Then start the mosquitto broker:
+
+    ```bash
+    docker run -d --name mqtt-server --network infranet_network \
+      -p 1883:1883 -p 9001:9001 \
+      ghcr.io/everest/containers/mosquitto:docker-images-v0.1.0
     ```
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Install ISO 15118 Python Dependencies">
+    The SIL configuration includes an ISO 15118 EV simulator written in Python. From the `build/` directory, activate the pre-built virtual environment and install the required packages:
 
     ```bash
-    your-cli start
+    source venv/bin/activate
+    make iso15118_pip_install_dist
     ```
+  </Step>
+
+  <Step title="Run the SIL Simulation">
+    Launch EVerest with the software-in-the-loop configuration. This script starts the `manager` process along with every module declared in the SIL config — each as an independent process:
+
+    ```bash
+    ./run-scripts/run-sil.sh
+    ```
+
+    In a second terminal window, start the Node-RED interface:
+
+    ```bash
+    ./run-scripts/nodered-sil.sh
+    ```
+
+    Then open your browser at [http://localhost:1880/ui](http://localhost:1880/ui) to reach the simulation control panel. You can use the **CAR PLUGIN**, **PAUSE**, **RESUME**, and **UNPLUG** buttons to simulate a complete AC charging session.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Understanding the SIL Configuration
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+The SIL run uses `config/config-sil.yaml` from the repository root. It declares the complete set of modules needed for a simulated AC charging station. Each top-level key under `active_modules` is a module instance. For example:
+
+```yaml
+active_modules:
+  connector_1:
+    module: EvseManager
+    config_module:
+      charge_mode: AC
+      connector_id: 1
+      evse_id: DE*PNX*E12345*1
+      ac_hlc_enabled: true
+      session_logging: true
+      session_logging_path: /tmp/everest-logs
+    connections:
+      bsp:
+        - implementation_id: board_support
+          module_id: connector_1_powerpath
+      hlc:
+        - implementation_id: charger
+          module_id: iso15118_charger
+      slac:
+        - implementation_id: evse
+          module_id: slac
+
+  connector_1_powerpath:
+    module: YetiSimulator
+    config_module:
+      connector_id: 1
+```
+
+`EvseManager` is the charging port controller. It requires a `bsp` (board support package) connection — here satisfied by `YetiSimulator`, which simulates the hardware. All hardware-facing modules in the SIL config are similarly replaced by software simulators, making it possible to run a complete charging session without any physical hardware.
+
+## Understanding EVerest Modules
+
+Once the simulation is running, the manager process logs show each module starting up. MQTT topics follow the pattern `everest/<module_id>/<implementation_id>/`. You can inspect live traffic with any MQTT client:
+
+```bash
+mosquitto_sub -h localhost -p 1883 -t 'everest/#' -v
+```
+
+Modules expose functionality through **interfaces** defined as YAML files. An interface declares **VARs** (values published by the module) and **CMDs** (commands that other modules can call). Here is a minimal example of an interface definition:
+
+```yaml
+description: Example interface for a hardware sensor.
+cmds:
+  get_id:
+    description: Returns the hardware identifier.
+    arguments:
+      verbose:
+        description: Include extended diagnostic info.
+        type: boolean
+    result:
+      description: Hardware identifier string.
+      type: integer
+vars:
+  temperature:
+    description: Current sensor temperature in degrees Celsius.
+    type: integer
+```
+
+New modules are scaffolded from a `manifest.yaml` file using the `ev-cli` tool:
+
+```bash
+ev-cli mod create EVSE/MyModuleName
+```
+
+This generates C++ stub files with `init()` and `ready()` lifecycle methods and handler stubs for every CMD in the declared interfaces. Modules can be implemented in **C++**, **Python**, or **Rust**.
+
+## Dev Container Alternative
+
+If you prefer a fully containerized environment — or are developing on macOS or Windows — EVerest ships a pre-configured dev container.
+
+<Tabs>
+  <Tab title="VS Code">
+    1. Install [Docker](https://docs.docker.com/engine/install/), [Docker Compose V2](https://docs.docker.com/compose/install), and the [VS Code Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+    2. Clone the repository: `git clone https://github.com/EVerest/EVerest.git path/to/EVerest`
+    3. Open the folder in VS Code: `code path/to/EVerest`
+    4. When prompted, choose **Reopen in Container**.
+
+    VS Code will build the container automatically. The EVerest repo is mapped to `/workspace` inside the container. Use the built-in terminal to build:
+
+    ```bash
+    mkdir build && cd build
+    cmake ..
+    cmake --build . --parallel 8
+    ```
+  </Tab>
+  <Tab title="devrd CLI">
+    The `devrd` CLI manages service containers independently of VS Code. This variant is useful for headless environments or CI pipelines. Refer to the [dev container tutorial](https://everest.github.io/nightly/tutorials/setup-devcontainer/index.html) for setup instructions.
+  </Tab>
+</Tabs>

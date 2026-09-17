@@ -1,0 +1,161 @@
+---
+title: 'Auth Module: Token-Based Authorization for Charging'
+sidebarTitle: 'Auth'
+description: 'Auth aggregates token providers, validates tokens via configurable validators, selects the target EVSE connector, and manages reservations.'
+---
+
+The `Auth` module is the authorization hub of every EVerest charging station. It sits between the sources that supply authorization tokens (RFID readers, OCPP remote-start commands, mobile apps) and the validators that approve or reject them (OCPP CSMS, local allowlist). Once a token passes validation, Auth selects the correct EVSE, grants authorization to the corresponding EvseManager, and manages the connector state machine so that the session can proceed. It also handles all reservation logic, ensuring that reserved connectors accept only matching tokens.
+
+## What Auth Does
+
+<Steps>
+  <Step title="Receive tokens from providers">
+    One or more modules implementing `auth_token_provider` publish tokens to the Auth module. Typical providers include RFID/NFC reader drivers, the OCPP module (for remote-start), and test/debug token providers.
+  </Step>
+  <Step title="Validate each token">
+    Auth forwards every token to all connected `auth_token_validator` modules in parallel. Validators include the OCPP module (which checks the CSMS or its local authorization cache) and `LocalAllowlistTokenValidator` (which checks a static file). The first `Accepted` result wins; `Rejected` from any validator causes the overall result to be rejected.
+  </Step>
+  <Step title="Select an EVSE connector">
+    Using the configured `selection_algorithm`, Auth picks the appropriate connector among all managed EVSEs. If only one EVSE is managed, the selection is immediate (single-EVSE fast path).
+  </Step>
+  <Step title="Authorize the EvseManager">
+    Auth calls `authorize_response` on the selected EvseManager, which then allows the charging session to proceed.
+  </Step>
+  <Step title="Handle stop-transaction tokens">
+    If a presented token (or its parent ID token) matches an ongoing transaction, Auth stops that transaction rather than starting a new one — unless `stop_transaction_on_reswipe` is set to `false`.
+  </Step>
+</Steps>
+
+## Interfaces
+
+### Provided Interfaces
+
+| Implementation key | Interface | Description |
+|--------------------|-----------|-------------|
+| `main` | `auth` | Primary auth interface consumed by OCPP and EvseManager; provides `set_connection_timeout`, `set_master_pass_group_id`, and `withdraw_authorization` commands, plus the `token_validation_status` variable |
+| `reservation` | `reservation` | Reservation management interface; consumed by OCPP for `ReserveNow` / `CancelReservation` |
+
+### Required Interfaces
+
+| Requirement key | Interface | Min | Max | Description |
+|-----------------|-----------|-----|-----|-------------|
+| `token_provider` | `auth_token_provider` | 1 | 128 | Token sources: RFID readers, OCPP remote-start, mobile apps |
+| `token_validator` | `auth_token_validator` | 1 | 128 | Token validators: OCPP CSMS check, local allowlist |
+| `evse_manager` | `evse_manager` | 1 | 128 | One entry per managed EVSE; order matters (EVSE 1 first) |
+| `kvs` | `kvs` | 0 | 1 | Optional key-value store for reservation persistence |
+
+<Warning>
+The `evse_manager` connections must be listed in EVSE ID order in the EVerest config file — EVSE ID 1 first, EVSE ID 2 second, and so on. Auth uses the connection index to map connectors to their logical IDs.
+</Warning>
+
+## Configuration Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `selection_algorithm` | string | `FindFirst` | Algorithm used to pick a connector for an incoming token (`FindFirst`, `PlugEvents`, `PlugEventsLIFO`, `UserInput`) |
+| `connection_timeout` | integer | — | Seconds an authorization remains valid and the maximum time the PlugEvents algorithms wait for a plug-in |
+| `master_pass_group_id` | string | `""` | Tokens whose group ID matches this value can stop any transaction but cannot start new ones |
+| `prioritize_authorization_over_stopping_transaction` | boolean | `true` | When `true`, a new token starts a session on a free connector before using its parent ID to stop an existing one |
+| `ignore_connector_faults` | boolean | `false` | When `true`, authorize connectors even if they have active faults (useful in free-charging scenarios) |
+| `plug_in_timeout_enabled` | boolean | `false` | Start a plug-in timer immediately; require re-plug if authorization does not arrive within `connection_timeout` |
+| `stop_transaction_on_reswipe` | boolean | `true` | Re-presenting a token that started a transaction stops it; when `false`, a `UsedToReauthorize` event is published instead |
+
+## Selection Algorithms
+
+The `selection_algorithm` parameter controls how Auth chooses which connector to authorize when multiple EVSEs are managed.
+
+<Accordion title="FindFirst (default)">
+
+`FindFirst` is a non-blocking algorithm. It immediately selects the first available connector in connection order. If a referenced EVSE already has a pending plug-in (and no active transaction), that EVSE is preferred. If no connector qualifies, the request is rejected without waiting.
+
+**Best for:** Single-EVSE deployments and multi-EVSE deployments where responsiveness is more important than matching plugged-in vehicles.
+
+</Accordion>
+
+<Accordion title="PlugEvents (FIFO plug-in order)">
+
+`PlugEvents` waits up to `connection_timeout` seconds for an EV to plug in. When multiple EVSEs have plugged-in vehicles waiting, it selects the one that plugged in **first** (first-in, first-out). This algorithm blocks until a plug-in occurs or the timeout expires.
+
+```text
+Token received → any EV already plugged in? → select longest-waiting plug-in
+                ↓ no
+                wait up to connection_timeout → EV plugs in → select it
+                timeout → Reject (TimeOut)
+```
+
+**Best for:** Multi-EVSE charging stations with a shared authorization interface (e.g., a single RFID reader) where users walk up, plug in, and then swipe.
+
+</Accordion>
+
+<Accordion title="PlugEventsLIFO (LIFO plug-in order)">
+
+Identical to `PlugEvents` except that when multiple EVSEs have pending plug-ins, the one that plugged in **most recently** is selected (last-in, first-out). Use this variant when users are expected to authorize immediately after plugging in and the most recent plug-in is the intended target.
+
+</Accordion>
+
+<Accordion title="UserInput (not yet implemented)">
+
+The `UserInput` algorithm is reserved for future use. Configuring it will cause the module to report an error when it needs to select a connector and should not be used in production.
+
+</Accordion>
+
+## Authorization Flow
+
+The following diagram illustrates the complete token-handling path through the Auth module:
+
+```text
+Token received from provider
+        │
+        ▼
+Validate token (all validators in parallel)
+        │
+    Rejected? ──────────────────────────────► Rejected
+        │ Accepted
+        ▼
+Should token stop an ongoing transaction?
+        │ yes                   │ no
+        ▼                       ▼
+stop_transaction_on_reswipe?   Select connector via algorithm
+        │ true    │ false       │
+        ▼         ▼             ▼
+  Stop txn   Publish         Authorize EvseManager
+             UsedToReauthorize
+```
+
+## Token Providers and Validators
+
+### Built-in Token Providers
+
+<CardGroup cols={2}>
+  <Card title="NFC/RFID Readers" icon="wifi">
+    Hardware drivers in `HardwareDrivers/NfcReaders/` (PN532, PN7160, NxpNfcFrontend) implement `auth_token_provider` and publish tokens when a card is presented.
+  </Card>
+  <Card title="OCPP Remote Start" icon="server">
+    The OCPP module's `auth_provider` implementation forwards `RemoteStartTransaction` (1.6) or `RequestStartTransaction` (2.x) commands as tokens to the Auth module.
+  </Card>
+  <Card title="EvseManager Autocharge" icon="plug">
+    When `enable_autocharge` is set on an EvseManager, its `token_provider` implementation supplies a MAC-address-derived token automatically on plug-in.
+  </Card>
+  <Card title="DummyTokenProvider" icon="flask">
+    The `Testing/DummyTokenProvider` module supplies a configurable static token on startup — useful for development and automated testing without physical hardware.
+  </Card>
+</CardGroup>
+
+### Built-in Token Validators
+
+<CardGroup cols={2}>
+  <Card title="OCPP Module" icon="server">
+    The OCPP module's `auth_validator` implementation checks the token against the CSMS, the offline authorization cache, and the authorization list.
+  </Card>
+  <Card title="LocalAllowlistTokenValidator" icon="list">
+    The `Misc/LocalAllowlistTokenValidator` module validates tokens against a static file of known IDs — useful for offline-only stations or as a fallback.
+  </Card>
+</CardGroup>
+
+## Master Pass Group
+
+The `master_pass_group_id` parameter enables a special group of tokens (identified by their `parent_id_token` field matching this value) that can stop **any** ongoing transaction regardless of which token started it. This is intended for law enforcement or fleet operators who need to stop a session to move a vehicle. Master-pass tokens cannot start new sessions and are not affected by the `stop_transaction_on_reswipe` setting.
+
+## Plug & Charge
+
+For ISO 15118 Plug & Charge (PnC), the authorization token is derived from the EV's contract certificate rather than an RFID card. EvseManager's `token_provider` supplies the EVCCID or autocharge token to Auth, which then validates it through the OCPP module's contract-certificate validation path. See the Plug & Charge configuration guide for the full certificate provisioning workflow.

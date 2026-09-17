@@ -1,0 +1,175 @@
+---
+title: 'OCPP Modules: OCPP 1.6, 2.0.1, and 2.1 Support'
+sidebarTitle: 'OCPP'
+description: 'EVerest provides OCPPmulti (recommended, OCPP 1.6/2.0.1/2.1 in one module) plus separate legacy OCPP 1.6 and OCPP 2.0.1 modules for strict version pinning.'
+---
+
+EVerest provides full OCPP support through a family of modules built on top of [libocpp](https://github.com/EVerest/libocpp). The recommended module is **OCPPmulti**, which handles OCPP 1.6, 2.0.1, and 2.1 from a single binary and selects the protocol version automatically or by configuration. Two legacy single-version modules — `OCPP` (1.6) and `OCPP201` (2.0.1) — remain available for deployments that require strict version pinning. All three modules expose the same EVerest interfaces so that the rest of the system (Auth, EvseManager, API) is unaffected by the choice of OCPP module.
+
+## OCPPmulti (Recommended)
+
+The `OCPPmulti` module is the single source of truth for OCPP connectivity in new deployments. It unifies the formerly separate OCPP 1.6 and OCPP 2.0.1 code paths and adds OCPP 2.1 support. The active protocol version is determined by the `Mode` config parameter, which can be set at build time or changed at runtime.
+
+### Mode Parameter
+
+The `Mode` parameter controls which OCPP version OCPPmulti uses. It accepts four values:
+
+| Value | Behavior |
+|-------|----------|
+| `Only2` *(default)* | Always uses OCPP 2.x (2.0.1 or 2.1 as negotiated with the CSMS) |
+| `Only1.6` | Always uses OCPP 1.6 |
+| `Prefer2` | Tries OCPP 2.x first; falls back to 1.6 if the CSMS does not support it |
+| `Prefer1.6` | Tries OCPP 1.6 first; falls back to 2.x if the CSMS does not support it |
+
+<Note>
+For greenfield deployments, leave `Mode` at `Only2`. Use `Prefer1.6` or `Only1.6` only when connecting to a CSMS that does not support OCPP 2.x.
+</Note>
+
+### Provided Interfaces
+
+| Implementation key | Interface | Description |
+|--------------------|-----------|-------------|
+| `auth_validator` | `auth_token_validator` | Validates tokens via CSMS, AuthorizationList, or AuthorizationCache |
+| `auth_provider` | `auth_token_provider` | Provides remote-start authorization requests from CSMS |
+| `data_transfer` | `ocpp_data_transfer` | Passes custom data transfer messages to/from CSMS |
+| `ocpp_generic` | `ocpp` | Generic OCPP interface (reset, change availability, etc.) |
+| `session_cost` | `session_cost` | Reports session cost to other EVerest modules |
+
+### Required Interfaces
+
+OCPPmulti connects to up to 128 EvseManager instances and a set of supporting modules:
+
+| Requirement key | Interface | Min | Max | Description |
+|-----------------|-----------|-----|-----|-------------|
+| `evse_manager` | `evse_manager` | 1 | 128 | One entry per physical EVSE |
+| `auth` | `auth` | 1 | 1 | Auth module for token-handling coordination |
+| `security` | `evse_security` | 1 | 1 | Certificate management for TLS/PnC |
+| `system` | `system` | 1 | 1 | System-level operations (reboot, firmware update) |
+| `evse_energy_sink` | `external_energy_limits` | 0 | 129 | Push OCPP smart-charging schedules into EnergyManager |
+| `reservation` | `reservation` | 0 | 1 | Reservation management |
+| `display_message` | `display_message` | 0 | 1 | Display OCPP messages on EVSE UI |
+| `extensions_15118` | `iso15118_extensions` | 0 | 128 | ISO 15118 extensions per EVSE |
+| `grid_support` | `grid_support` | 0 | 128 | DER directive support per EVSE (OCPP 2.1) |
+| `charger_information` | `charger_information` | 0 | 1 | Static charger metadata |
+| `data_transfer` | `ocpp_data_transfer` | 0 | 1 | External data-transfer handler |
+
+### Configuration Parameters
+
+<Accordion title="Protocol and connection settings">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `Mode` | enum | `Only2` | OCPP version selection: `Only2`, `Only1.6`, `Prefer2`, `Prefer1.6` |
+| `DelayOcppStart` | integer | `0` | Milliseconds to wait before initiating the OCPP connection (allows connectors to reach Available state) |
+| `MessageQueueResumeDelay` | integer | `0` | Seconds to delay message queue after reconnect (needed for some OCTT test cases) |
+| `ResetStopDelay` | integer | `0` | Seconds to delay stop so CSMS can receive final messages before reset |
+| `EnableExternalWebsocketControl` | boolean | `false` | Allow external disconnect/reconnect of WebSocket (debug/testing only) |
+| `DelegateNetworkConfigurationToSystem` | boolean | `false` | Ask the system module to configure the network before each CSMS connection attempt |
+
+</Accordion>
+
+<Accordion title="OCPP 1.6 configuration paths">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ChargePointConfigPath` | string | `ocpp-config.json` | Legacy OCPP 1.6 JSON config file path |
+| `UserConfigPath` | string | `user_config.json` | Overlay config written by CSMS-driven key changes |
+| `DatabasePath` | string | `/tmp/ocpp_1_6_charge_point` | SQLite database directory for OCPP 1.6 |
+| `EnableLegacyConfigMigration` | boolean | `false` | Migrate legacy JSON config into device model on first startup |
+| `Ocpp16NetworkConfigSlot` | integer | `1` | Device model slot for 1.6 network connection details during migration |
+
+</Accordion>
+
+<Accordion title="OCPP 2.0.1 / device model paths">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `CoreDatabasePath` | string | `/tmp/ocpp201` | Persistent SQLite database for OCPP 2.x core data |
+| `DeviceModelConfigPath` | string | `component_config` | Component config directory (defines device model variables) |
+| `DeviceModelDatabasePath` | string | `device_model_storage.db` | SQLite database for the OCPP device model |
+| `DeviceModelDatabaseMigrationPath` | string | `device_model_migrations` | Migration files for device model schema upgrades |
+| `EverestDeviceModelDatabasePath` | string | `everest_device_model_storage.db` | EVerest-owned device model (EVSE/Connector components) |
+
+</Accordion>
+
+<Accordion title="Smart charging and composite schedules">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `CompositeScheduleIntervalS` | integer | `30` | Seconds between composite-schedule publications to connected modules (0 = only on CSMS change) |
+| `RequestCompositeScheduleDurationS` | integer | `600` | Duration of requested schedule window in seconds |
+| `RequestCompositeScheduleUnit` | string | `A` | Unit for schedules: `A` (Amps, recommended for AC) or `W` (Watts, recommended for DC) |
+
+</Accordion>
+
+<Accordion title="Logging">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `MessageLogPath` | string | `/tmp/everest_ocpp_logs` | Directory for OCPP message log files |
+| `CustomMrecErrorMapPath` | string | `''` | Optional JSON file mapping EVerest error types to OCPP `techCodes` |
+| `GridSupportHeartbeatS` | integer | `60` | Seconds between republications of the active DER directive set per EVSE |
+
+</Accordion>
+
+## Device Model Configuration
+
+OCPP 2.0.1 and 2.1 use a hierarchical **device model** defined by the OCPP specification. In EVerest, the device model is bootstrapped from component config files stored in the directory pointed to by `DeviceModelConfigPath`. Each file describes the variables, attributes, and constraints for one OCPP component (e.g., `OCPPCommCtrlr`, `SmartChargingCtrlr`, `SampledDataCtrlr`).
+
+<Steps>
+  <Step title="Bootstrap the device model">
+    Place component config JSON files in the `component_config/` directory. Libocpp ships a set of default files aligned with the OCPP 2.0.1 specification. Copy and adjust them for your deployment.
+  </Step>
+  <Step title="Point the module at your configs">
+    Set `DeviceModelConfigPath` to the directory containing your component configs, and `DeviceModelDatabasePath` to a writable path for the SQLite storage.
+  </Step>
+  <Step title="Set the CSMS connection details">
+    Edit the `NetworkConnectionProfile` component config to specify the CSMS WebSocket URL, security profile (none, HTTP Basic Auth, or TLS), and `ChargePointId`.
+  </Step>
+  <Step title="Start EVerest">
+    On the first run, OCPPmulti (or OCPP201) will initialize the database from the component configs and attempt a WebSocket connection to the CSMS.
+  </Step>
+</Steps>
+
+## Legacy OCPP 1.6 Module
+
+The `OCPP` module targets OCPP-J 1.6 only. It shares most configuration parameters with OCPPmulti's 1.6 path but does not support version negotiation or OCPP 2.x. Use this module only when integrating with systems that cannot handle OCPPmulti.
+
+**Key differences from OCPPmulti:**
+- Provides `main` (interface `ocpp_1_6_charge_point`) in addition to the shared interfaces.
+- Supports a `ConfigBackend` parameter for selecting between the legacy JSON file (`legacy`), a pure device model (`device_model`), or a one-time migration path (`device_model_with_migration`).
+- The `reservation` requirement is mandatory (min\_connections = 1); in OCPPmulti it is optional.
+
+<Accordion title="OCPP 1.6 module — unique parameters">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ConfigBackend` | enum | `legacy` | Config storage: `legacy`, `device_model`, or `device_model_with_migration` |
+| `PublishChargingScheduleIntervalS` | integer | `30` | Interval for publishing charging schedules (equivalent to `CompositeScheduleIntervalS`) |
+| `PublishChargingScheduleDurationS` | integer | `600` | Duration of requested charging schedule window |
+| `EnableDeviceModelFallbackToLegacyJson` | boolean | `false` | Fall back to JSON backend if device model initialization fails |
+
+</Accordion>
+
+## Legacy OCPP201 Module
+
+The `OCPP201` module targets OCPP 2.0.1 only. It is functionally identical to OCPPmulti running in `Only2` mode. Migrate to OCPPmulti for new deployments to gain OCPP 2.1 support and the future-proof single-module architecture.
+
+**Required interfaces that differ from OCPPmulti:**
+- `reservation` is optional (min\_connections = 0), matching OCPPmulti behavior.
+- No `grid_support` requirement (OCPP 2.1 DER directives are OCPPmulti-only).
+- No `DelegateNetworkConfigurationToSystem` parameter.
+
+## Choosing the Right Module
+
+<CardGroup cols={3}>
+  <Card title="OCPPmulti" icon="star">
+    **Recommended for all new deployments.** Supports OCPP 1.6, 2.0.1, and 2.1. Protocol version is runtime-configurable. Actively maintained.
+  </Card>
+  <Card title="OCPP (1.6)" icon="clock-rotate-left">
+    Use only for deployments that are permanently pinned to OCPP 1.6 and cannot accept a multi-version module binary.
+  </Card>
+  <Card title="OCPP201" icon="clock-rotate-left">
+    Use only when strict OCPP 2.0.1 pinning is needed and migration to OCPPmulti is blocked by a downstream dependency.
+  </Card>
+</CardGroup>

@@ -1,0 +1,195 @@
+---
+title: 'EVerest Interfaces: Commands, Variables, and Types'
+sidebarTitle: 'Interfaces & Types'
+description: 'EVerest interfaces define CMDs for synchronous RPC and VARs for async pub/sub. Shared type YAML files describe the data structures passed between modules.'
+---
+
+Interfaces are the contracts that govern how EVerest modules communicate with each other. Every piece of data that crosses a module boundary — whether it is a function call, a sensor reading, or a state change notification — travels through an interface. An interface is a named YAML file under `interfaces/` that declares a set of commands (CMDs) for synchronous calls and a set of variables (VARs) for asynchronous publications. Shared data structures referenced by those commands and variables are defined in separate `types/` YAML files. Together, these three concepts — commands, variables, and types — form the complete vocabulary of inter-module communication in EVerest.
+
+## Commands (CMDs)
+
+A command is a synchronous remote procedure call. One module invokes a command on another module's interface implementation, blocks waiting for a response, and receives a typed return value. Commands are suitable for operations where the caller needs a result before proceeding: enabling or disabling a connector, requesting EVSE information, or stopping a transaction.
+
+On the MQTT layer, a command call is a publish to:
+
+```text
+everest/{module_instance_id}/{implementation_id}/cmd
+```
+
+The framework handles serialization, routing, and deserialization transparently. From the C++ perspective, the caller uses a generated `call_{command_name}()` method on the interface proxy object (`r_{req_id}`), and the provider implements a `handle_{command_name}()` virtual method in its implementation class.
+
+## Variables (VARs)
+
+A variable is an asynchronous, published topic. The module that provides the interface publishes updates to a variable whenever the underlying value changes. Any number of other modules can subscribe to receive those updates through a callback function. Variables are suited for sensor readings, status flags, counters, and any value that changes continuously over time.
+
+On the MQTT layer, a variable update is a publish to:
+
+```text
+everest/{module_instance_id}/{implementation_id}/var
+```
+
+From C++, the provider calls `publish_{var_name}(value)` and subscribers register a callback with `subscribe_{var_name}([this](const T& val) { ... })`.
+
+## A Complete Interface Example
+
+The following interface definition from `interfaces/energy.yaml` is the internal interface between EnergyNode modules and the EnergyManager. It defines a single variable for upstream energy flow requests and a single command by which the EnergyManager enforces calculated limits downward through the energy tree:
+
+```yaml
+description: >-
+  This interface is the internal energy management interface between nodes.
+
+cmds:
+  enforce_limits:
+    description: The EnergyManager enforces a limit using this command.
+    arguments:
+      value:
+        description: Limit object that will be routed through the tree.
+        type: object
+        $ref: /energy#/EnforcedLimits
+
+vars:
+  energy_flow_request:
+    description: >-
+      Request energy flow to supply/limit energy import (direction from grid
+      to car) and/or consume/limit energy export (car to grid).
+    type: object
+    $ref: /energy#/EnergyFlowRequest
+```
+
+The `$ref` fields reference shared type definitions in the `types/energy.yaml` schema file. This prevents duplication of complex data structures across multiple interface files.
+
+## External Energy Limits Interface
+
+The `external_energy_limits` interface is a second real-world example showing both a command and a variable in the same interface:
+
+```yaml
+description: >-
+  This interface allows to limit energy flow at a specific node of the energy
+  tree from the outside (e.g. from OCPP).
+
+cmds:
+  set_external_limits:
+    description: Set additional external energy flow limits at this node.
+    arguments:
+      value:
+        description: External limits object
+        type: object
+        $ref: /energy#/ExternalLimits
+
+vars:
+  capabilities:
+    description: >-
+      Describes the maximum/rated energy flow at this node, e.g. how many
+      phases are configured, the maximum current and the nominal voltage.
+      This is published at least once during start up.
+    type: object
+    $ref: /energy#/CapabilityLimits
+```
+
+<Note>
+  The `capabilities` variable is published at least once on startup. Subscribers should handle the case where the variable has not yet been published when they first subscribe, by using the retained message from the broker or waiting for the first callback invocation.
+</Note>
+
+## The Ping Interface: A Minimal Example
+
+The following interface from the EVerest documentation illustrates every structural element — a command with arguments and a return value, and a variable with a scalar type:
+
+```yaml
+description: Interface for a ping-pong interaction
+
+cmds:
+  command_ping:
+    description: Send a ping with a payload to the ping server.
+    arguments:
+      payload:
+        description: An arbitrary string that the server will pong back.
+        type: string
+    result:
+      description: The same payload as the ping
+      type: string
+
+vars:
+  var_nping:
+    description: The number of pings the server has received so far
+    type: integer
+```
+
+<Accordion title="Command field reference">
+
+| Field | Required | Description |
+|---|---|---|
+| `description` | Yes | Human-readable description of the command |
+| `arguments` | No | Named, typed input parameters |
+| `arguments.{name}.type` | Yes | JSON Schema type: `string`, `integer`, `number`, `boolean`, `object`, `array` |
+| `arguments.{name}.$ref` | No | Reference to a shared type definition |
+| `result` | No | Return value type and description (omit for void commands) |
+
+</Accordion>
+
+<Accordion title="Variable field reference">
+
+| Field | Required | Description |
+|---|---|---|
+| `description` | Yes | Human-readable description of what the variable represents |
+| `type` | Yes | JSON Schema type of the published value |
+| `$ref` | No | Reference to a shared type definition for complex objects |
+
+</Accordion>
+
+## Shared Types
+
+When commands or variables reference complex objects, those objects are defined in `types/` YAML files using JSON Schema syntax. A `$ref` in an interface file points to a type using the pattern `/type_file_name#/TypeName`.
+
+Type files benefit multiple interfaces simultaneously and ensure that the `EnergyFlowRequest` object used by one module is structurally identical to the one expected by another. The `ev-cli` generator reads these type files and emits the corresponding C++ structs into `Types.hpp` files under `build/generated/include/generated/interfaces/{interface_name}/`.
+
+## How Interfaces Map to Generated C++ Code
+
+Running `ev-cli generate-headers` for an interface named `interface_ping` produces three header files:
+
+```text
+build/generated/include/generated/interfaces/interface_ping/
+├── Implementation.hpp   # abstract base class for providers
+├── Interface.hpp        # proxy class for callers (requirers)
+└── Types.hpp            # custom type definitions from $ref
+```
+
+**For the module that requires the interface** (`r_{req_id}` in the module class), `Interface.hpp` provides the `interface_pingIntf` class with:
+- `call_command_ping(payload)` — calls the command synchronously
+- `subscribe_var_nping(callback)` — registers a callback for variable updates
+
+**For the module that provides the interface** (`p_{impl_id}` in the module class), `Implementation.hpp` provides the `interface_pingImplBase` abstract class with:
+- `publish_var_nping(value)` — publishes an update to the variable
+- `handle_command_ping(payload)` — pure virtual; must be overridden to handle incoming calls
+
+```cpp
+// Caller side (in a module that requires interface_ping)
+std::string result = r_requirement_ping_server->call_command_ping("hello");
+
+r_requirement_ping_server->subscribe_var_nping(
+    [this](int nping) {
+        EVLOG_info << "Server has received " << nping << " pings";
+    }
+);
+
+// Provider side (in the implementation class)
+std::string interface_pingImpl::handle_command_ping(std::string& payload) {
+    nping_count++;
+    publish_var_nping(nping_count);
+    return payload; // echo back
+}
+```
+
+<Tip>
+  Run `ev-cli module update` after changing a manifest's `provides` or `requires` sections to regenerate the module header files. The `.cpp` implementation files are never overwritten unless you pass `--force`.
+</Tip>
+
+## Interface Errors
+
+An interface definition can also declare error types that its implementations are permitted to raise. These are listed under an `errors` key referencing error definition files:
+
+```yaml
+errors:
+  - reference: /errors/generic
+```
+
+This tells the error framework which error types are valid for this interface. See the [Error Framework](/concepts/error-framework) page for the full error handling model.

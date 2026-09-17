@@ -1,0 +1,309 @@
+---
+title: 'EVerest Energy Management and Grid Integration'
+sidebarTitle: 'Energy Management'
+description: 'EVerest models energy systems as node trees. EnergyManager distributes power across EVSEs respecting fuse limits, external constraints, and OCPP schedules.'
+---
+
+Energy management in EVerest goes beyond simple current limiting. It provides a hierarchical, tree-based model of the physical energy system — fuses, circuit breakers, EVSEs, and external limit sources — and an optimization algorithm that continuously calculates and enforces power budgets across the entire installation. This architecture supports everything from a single home charger to a multi-EVSE commercial site with dynamic OCPP smart charging, solar forecast integration, and bidirectional vehicle-to-grid (V2G) operation.
+
+## The Energy Tree Model
+
+EVerest represents a physical energy installation as an **energy tree**. Each node in the tree corresponds to a physical or logical component: a circuit breaker, an EVSE, an OCPP limit sink, or a solar forecast aggregator. Nodes communicate energy requests upward (leaf to root) and receive enforced limits downward (root to leaf).
+
+A minimal single-EVSE installation produces a two-node tree:
+
+```text
+grid_connection_point (EnergyNode, fuse 40 A)
+    └── connector_1 (EvseManager, hardware cap 32 A)
+```
+
+A two-EVSE site with OCPP per-EVSE and per-station limits looks like this:
+
+```text
+grid_connection_point (EnergyNode, fuse 63 A, OCPP station limit)
+    ├── api_sink_1 (EnergyNode, API limit for EVSE 1)
+    │       └── ocpp_sink_1 (EnergyNode, OCPP limit for EVSE 1)
+    │                   └── evse_manager_1 (EvseManager)
+    └── api_sink_2 (EnergyNode, API limit for EVSE 2)
+            └── ocpp_sink_2 (EnergyNode, OCPP limit for EVSE 2)
+                        └── evse_manager_2 (EvseManager)
+```
+
+## Energy Nodes
+
+An **energy node** is any EVerest module that implements the `energy` interface. Currently, two EVerest modules act as energy nodes:
+
+- **EnergyNode** — a configurable node representing a fuse, circuit breaker, or logical limit sink. It both provides and requires the `energy` interface, enabling arbitrary tree depth.
+- **EvseManager** — the leaf node of the tree, representing a physical charging connector. It provides the `energy` interface upward and receives enforced current/power limits from above.
+
+The `energy` interface is defined in `interfaces/energy.yaml`:
+
+```yaml
+description: >-
+  This interface is the internal energy management interface between nodes.
+
+cmds:
+  enforce_limits:
+    description: The EnergyManager enforces a limit using this command.
+    arguments:
+      value:
+        description: Limit object that will be routed through the tree.
+        type: object
+        $ref: /energy#/EnforcedLimits
+
+vars:
+  energy_flow_request:
+    description: >-
+      Request energy flow to supply/limit energy import (from grid to car)
+      and/or consume/limit energy export (car to grid).
+    type: object
+    $ref: /energy#/EnergyFlowRequest
+```
+
+## The EnergyManager Module
+
+The **EnergyManager** module sits above the energy tree and orchestrates power distribution. It connects to the root energy node via the `energy_trunk` requirement and runs on a configurable update interval (default: 1 second).
+
+```yaml
+energy_manager:
+  module: EnergyManager
+  config_module:
+    schedule_interval_duration: 60    # forecast slot duration [min]
+    schedule_total_duration: 10       # total forecast horizon [h]
+    debug: false
+    switch_3ph1ph_while_charging_mode: Both
+    switch_3ph1ph_max_nr_of_switches_per_session: 5
+    switch_3ph1ph_time_hysteresis_s: 20
+    switch_3ph1ph_power_hysteresis_W: 1000
+  connections:
+    energy_trunk:
+      - implementation_id: energy_grid
+        module_id: grid_connection_point
+```
+
+The EnergyManager's optimization algorithm:
+
+- Reads the aggregated `EnergyFlowRequest` tree published bottom-up from all leaf nodes
+- Calculates the maximum current/power allocations that satisfy every node's limits
+- Distributes power equally among child nodes when collective demand exceeds a parent node's fuse limit
+- Prefers charging (import) over discharging (export) when the configured limits permit both
+- Calls `enforce_limits` on the root node, which propagates the limits down through the tree
+
+## EnergyFlowRequest: Requesting and Receiving Limits
+
+Every energy node publishes an `EnergyFlowRequest` variable that describes what it wants and what it can handle. Leaf nodes (EvseManagers) publish their hardware capabilities and current charging state. Intermediate nodes (EnergyNodes) aggregate their children's requests and add their own fuse constraints.
+
+A typical leaf-node request (from the EVerest documentation) looks like this:
+
+```json
+{
+  "children": [],
+  "evse_state": "Charging",
+  "node_type": "Evse",
+  "priority_request": false,
+  "schedule_import": [
+    {
+      "limits_to_root": {
+        "ac_max_current_A": { "value": 32.0, "source": "EVSE1_root" },
+        "ac_max_phase_count": { "value": 3, "source": "EVSE1_phase" },
+        "ac_min_current_A": { "value": 6.0, "source": "EVSE1_mincurrent" },
+        "ac_min_phase_count": { "value": 1, "source": "EVSE1_minphase" },
+        "ac_number_of_active_phases": 3,
+        "ac_supports_changing_phases_during_charging": true
+      },
+      "limits_to_leaves": {
+        "ac_max_current_A": { "value": 32.0, "source": "EVSE1_leave" }
+      },
+      "timestamp": "2024-12-17T13:08:36.479Z"
+    }
+  ],
+  "schedule_export": [ ... ],
+  "schedule_setpoints": [],
+  "uuid": "evse1"
+}
+```
+
+Each schedule entry carries a `source` string on every limit value so the EnergyManager can trace which constraint is the binding factor in its distribution result.
+
+## External Energy Limits
+
+External systems — OCPP smart charging, REST APIs, EEBus — can inject energy limits into the tree through the `external_energy_limits` interface:
+
+```yaml
+description: >-
+  This interface allows to limit energy flow at a specific node of the
+  energy tree from the outside (e.g. from OCPP).
+
+cmds:
+  set_external_limits:
+    description: Set additional external energy flow limits at this node.
+    arguments:
+      value:
+        description: External limits object
+        type: object
+        $ref: /energy#/ExternalLimits
+```
+
+External limits are applied to specific **EnergyNode** instances. The OCPP module, for example, requires multiple connections to `external_energy_limits` implementations — one per EnergyNode it controls:
+
+```yaml
+ocpp:
+  module: OCPP
+  connections:
+    evse_energy_sink:
+      - module_id: grid_connection_point   # station-level limit
+        implementation_id: external_limits
+      - module_id: ocpp_sink_1             # EVSE 1 limit
+        implementation_id: external_limits
+      - module_id: ocpp_sink_2             # EVSE 2 limit
+        implementation_id: external_limits
+```
+
+The `EnergyNode` module also optionally accepts a `price_information` connection for energy price forecasts and a `powermeter` connection for real-time usage data.
+
+## Energy Price Information and Solar Forecasting
+
+The `energy_price_information` interface allows a pricing oracle module to publish time-series energy price forecasts. EnergyNode modules connect to this interface and incorporate price data when building their `EnergyFlowRequest`, enabling time-of-use optimization:
+
+```yaml
+description: This interface defines the interface for an energy price forecast
+vars:
+  energy_pricing:
+    description: >-
+      Forecast JSON Object containing timestamps and the price forecast
+      for both import and export.
+    type: object
+    $ref: /energy_price_information#/EnergyPriceSchedule
+```
+
+Solar generation forecasts and battery storage capabilities are modeled as additional energy nodes in the tree, contributing `schedule_export` entries to the `EnergyFlowRequest`.
+
+## Configuring an Energy Tree in EVerest
+
+Building the YAML configuration for a multi-source energy tree is a step-by-step process of adding nodes and wiring their connections. The following example represents a two-EVSE site with separate OCPP and API limit sinks:
+
+<Steps>
+  <Step title="Add the EVSE leaf nodes">
+    Start with the physical charging connectors as leaf nodes. Each must have a module mapping to identify which EVSE it belongs to.
+
+    ```yaml
+    active_modules:
+      evse_manager_1:
+        module: EvseManager
+        mapping:
+          module:
+            evse: 1
+      evse_manager_2:
+        module: EvseManager
+        mapping:
+          module:
+            evse: 2
+    ```
+  </Step>
+  <Step title="Add OCPP limit sinks">
+    Insert EnergyNode modules between OCPP and the EVSEs. These nodes accept OCPP-originated limits and pass the aggregated request upward.
+
+    ```yaml
+      ocpp_sink_1:
+        module: EnergyNode
+        mapping:
+          module:
+            evse: 1
+        connections:
+          energy_consumer:
+            - module_id: evse_manager_1
+              implementation_id: energy_grid
+      ocpp_sink_2:
+        module: EnergyNode
+        mapping:
+          module:
+            evse: 2
+        connections:
+          energy_consumer:
+            - module_id: evse_manager_2
+              implementation_id: energy_grid
+    ```
+  </Step>
+  <Step title="Add API limit sinks">
+    Layer another set of EnergyNode modules above the OCPP sinks, so the API module can set its own per-EVSE limits independently.
+
+    ```yaml
+      api_sink_1:
+        module: EnergyNode
+        mapping:
+          module:
+            evse: 1
+        connections:
+          energy_consumer:
+            - module_id: ocpp_sink_1
+              implementation_id: energy_grid
+      api_sink_2:
+        module: EnergyNode
+        mapping:
+          module:
+            evse: 2
+        connections:
+          energy_consumer:
+            - module_id: ocpp_sink_2
+              implementation_id: energy_grid
+    ```
+  </Step>
+  <Step title="Add the grid connection point">
+    The root node models the physical grid connection fuse. It aggregates both EVSE branches and is the entry point for the EnergyManager.
+
+    ```yaml
+      grid_connection_point:
+        module: EnergyNode
+        mapping:
+          module:
+            evse: 0
+        config_module:
+          fuse_limit_A: 63
+          phase_count: 3
+        connections:
+          energy_consumer:
+            - module_id: api_sink_1
+              implementation_id: energy_grid
+            - module_id: api_sink_2
+              implementation_id: energy_grid
+    ```
+  </Step>
+  <Step title="Connect the EnergyManager">
+    Wire the EnergyManager to the root node via `energy_trunk`.
+
+    ```yaml
+      energy_manager:
+        module: EnergyManager
+        connections:
+          energy_trunk:
+            - module_id: grid_connection_point
+              implementation_id: energy_grid
+    ```
+  </Step>
+</Steps>
+
+## Phase Switching (1-phase / 3-phase)
+
+The EnergyManager supports switching AC charging sessions between single-phase and three-phase operation. This feature is useful for installations where low-power charging (below ~4 kW) is more efficient on one phase.
+
+<Warning>
+  Some vehicles (notably the first-generation Renault Zoe) may be permanently damaged when switched from single-phase to three-phase during active charging. Verify EV compatibility before enabling this feature in production.
+</Warning>
+
+Phase switching requires coordinated configuration across three modules:
+
+| Module | Required Settings |
+|---|---|
+| `EnergyManager` | `switch_3ph1ph_while_charging_mode: Both` (or `Oneway`), hysteresis parameters |
+| `EvseManager` | `switch_3ph1ph_delay_s`, `switch_3ph1ph_cp_state` |
+| BSP module (evse_board_support) | `supports_changing_phases_during_charging: true`, min phases = 1, max phases = 3 |
+
+The EnergyManager's phase switching algorithm works best with a **Watt-based** external limit, which preserves the manager's freedom to choose the optimal switching moment. An Ampere-based limit with explicit phase count constraints also works but transfers switching control to the external source.
+
+<Tip>
+  For 32 A per-phase hardware, a Watt-based limit creates a natural overlap between the single-phase range (1.3–7.4 kW) and the three-phase range (4.2–22 kW), minimizing unnecessary switching cycles.
+</Tip>
+
+## Integration with OCPP Smart Charging
+
+When an OCPP module is present, its charging schedule translates directly into `set_external_limits` calls on the appropriate EnergyNode implementations. The EnergyManager then factors these OCPP-sourced limits into its next distribution calculation alongside hardware fuse limits and any other active external limits. This means OCPP smart charging profiles, local load management, and solar export constraints all coexist in the same energy tree without conflict.

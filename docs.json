@@ -1,72 +1,106 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "EVerest",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#0071bc",
+    "light": "#bbf31c",
+    "dark": "#1c3f75"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
+  "favicon": "https://media.brand.dev/94c692a2-27ee-4ab7-99e4-61901fbabf9c.png",
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/EVerest/EVerest"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/EVerest/EVerest"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "quickstart-hardware"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/module-concept",
+              "concepts/interfaces-and-types",
+              "concepts/configuration",
+              "concepts/error-framework",
+              "concepts/energy-management"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/develop-a-module",
+              "guides/ocpp",
+              "guides/plug-and-charge",
+              "guides/security-best-practices",
+              "guides/hardware-bringup",
+              "guides/yocto-embedded"
+            ]
+          },
+          {
+            "group": "Project",
+            "pages": [
+              "project/community",
+              "project/contributing",
+              "project/releases-and-versioning"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Manager & Configuration",
+            "pages": [
+              "reference/manager-cli",
+              "reference/config-yaml-format",
+              "reference/management-apis"
+            ]
+          },
+          {
+            "group": "APIs",
+            "pages": [
+              "reference/everest-api",
+              "reference/rpc-api"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "reference/modules/evse-manager",
+              "reference/modules/ocpp",
+              "reference/modules/auth",
+              "reference/modules/energy-manager",
+              "reference/modules/hardware-drivers"
+            ]
+          },
+          {
+            "group": "Developer Tools",
+            "pages": [
+              "reference/tools/ev-cli",
+              "reference/tools/management-api-cli"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

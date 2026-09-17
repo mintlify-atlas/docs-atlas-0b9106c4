@@ -1,0 +1,235 @@
+---
+title: 'EvseManager Module: EVSE Control and IEC 61851'
+sidebarTitle: 'EvseManager'
+description: 'EvseManager drives the IEC 61851 state machine, charging session lifecycle, HLC via ISO 15118, and the energy tree leaf node for one EVSE connector.'
+---
+
+The `EvseManager` module is the central charging kernel in EVerest — one instance manages exactly one EVSE (Electric Vehicle Supply Equipment). It orchestrates the full IEC 61851 control pilot state machine, coordinates High-Level Communication (HLC) via ISO 15118 and SLAC, collects session energy data, and exposes the EVSE as a node in EVerest's energy management tree. Protocol modules such as OCPP and API layers always interact with EVSEs through the `evse_manager` interface that EvseManager provides.
+
+## What EvseManager Does
+
+EvseManager handles every aspect of a charging session from the moment a connector is plugged in to the moment it is unplugged:
+
+- **IEC 61851 state machine** — drives Control Pilot states A through F (and the error state F) in software; the lowest-level PWM generation and pilot reading are delegated to a Board Support Package (BSP) module.
+- **High-Level Communication** — optionally coordinates SLAC (signal level attenuation characterization) and the ISO 15118-2/DIN SPEC 70121 stack for plug-and-charge, smart-charging, and DC cable check sequences.
+- **Session lifecycle events** — publishes `session_event` variables for every significant transition (plug-in, authorization, charging start/stop, error, unplug) so that OCPP, display, and API modules can react without polling.
+- **Energy management node** — acts as a leaf node in the EVerest energy tree; it publishes energy flow requests up the tree and receives enforced current/power limits back from the EnergyManager.
+- **Autocharge / Plug & Charge token provider** — optionally provisions RFID-equivalent authorization tokens derived from the SLAC MAC address or the ISO 15118 EVCCID, feeding the Auth module.
+- **Powermeter aggregation** — republishes the power meter reading from whichever meter is used for billing (DC-side meter takes priority over AC-side in DC applications).
+
+## Provided Interfaces
+
+| Implementation key | Interface | Description |
+|--------------------|-----------|-------------|
+| `evse` | `evse_manager` | Primary interface — session control commands, session events, limits, and telemetry variables |
+| `energy_grid` | `energy` | Leaf node interface for the energy supply tree |
+| `token_provider` | `auth_token_provider` | Supplies autocharge or plug-and-charge tokens to the Auth module |
+| `random_delay` | `uk_random_delay` | Runtime control of the UK smart-charging regulation random-delay feature |
+| `dc_external_derate` | `dc_external_derate` | DC external derating capability (e.g. thermal protection from external source) |
+
+## Required Interfaces
+
+<Accordion title="Required interface connections">
+
+| Requirement key | Interface | Required | Description |
+|-----------------|-----------|----------|-------------|
+| `bsp` | `evse_board_support` | ✅ Mandatory | Control pilot, relay, motor lock, and RCD hardware abstraction |
+| `ac_rcd` | `ac_rcd` | Optional | AC residual current device driver |
+| `connector_lock` | `connector_lock` | Optional | Connector locking motor driver |
+| `powermeter_grid_side` | `powermeter` | Optional | Grid-side (AC inlet) power meter |
+| `powermeter_car_side` | `powermeter` | Optional | Car-side (DC outlet) power meter — preferred for DC billing |
+| `slac` | `slac` | Optional | SLAC (ISO 15118-3) signal level attenuation characterization |
+| `hlc` | `ISO15118_charger` | Optional | ISO 15118-2/20 high-level communication stack |
+| `imd` | `isolation_monitor` | Optional | DC isolation monitoring device (required for DC charging) |
+| `over_voltage_monitor` | `over_voltage_monitor` | Optional | Hardware over-voltage detection |
+| `powersupply_DC` | `power_supply_DC` | Optional | DC power supply (AC/DC converter) driver |
+| `store` | `kvs` | Optional | Persistent key-value store for session state |
+
+</Accordion>
+
+## Configuration Parameters
+
+The following parameters are defined in the module's `manifest.yaml`. Parameters without a default shown are **required** to be set explicitly.
+
+<Accordion title="Identity and connector configuration">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `connector_id` | integer | — | EVSE ID within the charging station (OCPP 3-tier model) |
+| `connector_type` | string | `Unknown` | Connector type (see `/evse_manager#/ConnectorTypeEnum`) |
+| `evse_id` | string | `DE*PNX*E1234567*1` | eMI3 EVSE ID sent in ISO 15118 messages |
+| `evse_id_din` | string | `49A80737A45678` | DIN SPEC 70121 EVSE ID (hexBinary-encoded) |
+
+</Accordion>
+
+<Accordion title="Payment and authorization">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `payment_enable_eim` | boolean | `true` | Enable EIM (RFID card, mobile app) authorization |
+| `payment_enable_contract` | boolean | `true` | Enable contract (plug-and-charge) authorization |
+| `disable_authentication` | boolean | `false` | Skip Auth module entirely; charge on plug-in (standalone/testing only) |
+| `enable_autocharge` | boolean | `false` | Enable MAC-address-based Autocharge (use PnC in production) |
+| `autocharge_use_slac_instead_of_hlc` | boolean | `false` | Use SLAC MAC instead of EVCCID for Autocharge token |
+| `central_contract_validation_allowed` | boolean | `false` | Allow contract in PaymentOptionList when TLS is active (ISO 15118 PnC) |
+| `contract_certificate_installation_enabled` | boolean | `true` | Advertise CertificateInstall/Update support |
+
+</Accordion>
+
+<Accordion title="AC charging and HLC">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `charge_mode` | enum | `AC` | Charging mode: `AC` or `DC` |
+| `ac_nominal_voltage` | number | `230` | Phase-to-neutral AC voltage in volts |
+| `ac_max_reactive_power` | number | `0` | Maximum EVSE reactive power (VAr); 0 = no reactive power capability |
+| `ac_hlc_enabled` | boolean | `false` | Enable ISO 15118 HLC for AC mode |
+| `ac_hlc_use_5percent` | boolean | `true` | Start with 5 % PWM to trigger SLAC (recommended) |
+| `ac_enforce_hlc` | boolean | `false` | Force HLC even with EIM (non-compliant; home use only) |
+| `ac_with_soc` | boolean | `false` | Switch between AC and DC to retrieve state-of-charge percentage |
+| `supported_iso_ac_bpt` | boolean | `false` | Offer ISO 15118-20 AC BPT (bidirectional) to the EV |
+
+</Accordion>
+
+<Accordion title="DC charging and cable check">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dc_isolation_voltage_V` | integer | `0` | Override cable-check isolation test voltage (0 = IEC 61851-23 auto) |
+| `cable_check_wait_number_of_imd_measurements` | integer | `1` | Samples to collect before trusting IMD result |
+| `cable_check_enable_imd_self_test` | boolean | `true` | Run IMD self-test during cable check (IEC 61851-23:2023 compliance) |
+| `cable_check_wait_below_60V_before_finish` | boolean | `true` | Wait for output < 60 V before ending cable check |
+| `dc_ramp_ampere_per_second` | integer | `25` | Maximum current ramp rate during DC charge loop (A/s) |
+| `hack_pause_imd_during_precharge` | boolean | `false` | Workaround for power supplies that cannot start with IMD active |
+
+</Accordion>
+
+<Accordion title="Reinitialization and state F behavior">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `reinit_duration_ms` | integer | `3000` | Duration of the reinit state before returning to normal operation |
+| `reinit_method` | enum | `CPStateF` | CP behavior during reinit: `CPStateE`, `CPStateF`, or `CPStateX1` |
+| `state_F_after_fault_ms` | integer | `300` | Minimum state-F duration after a charging fault (0 to disable) |
+
+</Accordion>
+
+<Accordion title="Energy management and phase switching">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `request_zero_power_in_idle` | boolean | `false` | Request 0 A when idle; enables power to be redistributed to active EVSEs |
+| `switch_3ph1ph_delay_s` | integer | `10` | Wait time when switching between 3-phase and 1-phase mode |
+| `switch_3ph1ph_cp_state` | enum | `X1` | CP state during phase switching: `X1`, `E`, or `F` |
+| `soft_over_current_tolerance_percent` | number | `10.0` | Allowed over-current tolerance percentage for AC soft monitoring |
+| `soft_over_current_measurement_noise_A` | number | `0.5` | Current measurement noise offset to avoid false over-current triggers |
+| `soft_over_current_timeout_ms` | integer | `7000` | Time allowed for AC over-current before triggering (minimum 6000 ms) |
+
+</Accordion>
+
+<Accordion title="UK smart charging random delay">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `uk_smartcharging_random_delay_enable` | boolean | `false` | Enable random delays at startup (UK smart charging regulation) |
+| `uk_smartcharging_random_delay_max_duration` | integer | `600` | Maximum random delay duration in seconds |
+| `uk_smartcharging_random_delay_at_any_change` | boolean | `true` | Apply delay on any current change (not only zero crossings) |
+
+</Accordion>
+
+<Accordion title="SAE J2847 / bidirectional power transfer">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sae_j2847_2_bpt_enabled` | boolean | `false` | Enable SAE J2847-2 V2G or V2H mode |
+| `sae_j2847_2_bpt_mode` | enum | `V2G` | BPT mode: `V2G` or `V2H` |
+| `bpt_channel` | enum | `None` | Physical BPT channel: `None`, `Unified`, or `Separated` |
+| `bpt_generator_mode` | enum | `None` | Power converter behavior: `None`, `GridFollowing`, or `GridForming` |
+| `bpt_grid_code_island_method` | enum | `None` | Islanding detection method (AC only): `None`, `Active`, or `Passive` |
+
+</Accordion>
+
+<Accordion title="Miscellaneous">
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `session_logging` | boolean | `false` | Enable session log file output |
+| `session_logging_path` | string | `/tmp` | Directory for session log files |
+| `session_logging_xml` | boolean | `true` | Include full XML HLC messages in session logs |
+| `has_ventilation` | boolean | `true` | Allow ventilated charging (IEC 61851 mode D) |
+| `initial_meter_value_timeout_ms` | integer | `5000` | Time to wait for first powermeter reading before allowing sessions to start |
+| `fail_on_powermeter_errors` | boolean | `true` | Set EVSE inoperative when a configured powermeter reports errors |
+| `session_id_type` | enum | `UUID` | Session ID format: `UUID`, `UUID_BASE64`, or `SHORT_BASE64` |
+| `external_ready_to_start_charging` | boolean | `false` | Delay charging-ready signal until an external module confirms readiness |
+| `internal_over_voltage_duration_ms` | integer | `400` | Time DC voltage must exceed negotiated limit before raising MREC5 |
+
+</Accordion>
+
+## IEC 61851 State Machine
+
+EvseManager implements the full IEC 61851-1 control-pilot state machine. State transitions are triggered by BSP events (pilot voltage measurement, proximity pilot) and by commands from OCPP or the Auth module.
+
+<Tabs>
+  <Tab title="AC Basic Charging">
+
+    In basic AC mode, the state machine follows the standard IEC 61851-1 sequence:
+
+    ```text
+    A (no vehicle) → B1 (vehicle detected, no PWM) → B2 (PWM active)
+         → C2 (charging, PWM) → B1 (charge pause or unplug) → A
+    ```
+
+    - **State A**: No vehicle connected; pilot at +12 V, no PWM.
+    - **State B**: Vehicle connected; pilot at +9 V. EvseManager starts PWM to signal available current.
+    - **State C**: Vehicle switches on; charging current flows.
+    - **State D**: Ventilated charging — only allowed when `has_ventilation` is `true`.
+    - **State E/F**: Error states; F is used to signal faults and during reinitialization.
+
+    The `state_F_after_fault_ms` parameter controls how long state F is held before the EVSE recovers (default 300 ms per IEC 61851-1:2017 Table A.5).
+
+  </Tab>
+  <Tab title="AC HLC (ISO 15118)">
+
+    When `ac_hlc_enabled` is `true`, EvseManager coordinates with the SLAC and ISO 15118 helper modules:
+
+    ```text
+    B2 (5% PWM triggers SLAC) → SLAC matching → TLS/V2G handshake
+        → ChargeParameterDiscovery → PowerDelivery → CurrentDemand → SessionStop
+    ```
+
+    Setting `ac_hlc_use_5percent` to `true` is strongly recommended because almost no production EVs will initiate SLAC on a nominal-duty PWM signal.
+
+  </Tab>
+  <Tab title="DC Charging">
+
+    DC mode extends the AC state machine with additional cable-check and precharge phases before current flows:
+
+    ```text
+    B2 (SLAC/HLC) → CableCheck (IMD isolation test)
+        → Precharge (ramp output voltage to EV battery level)
+        → CurrentDemand (closed-loop current/power delivery)
+        → WeldingDetection → SessionStop
+    ```
+
+    The `imd` (isolation monitor) and `powersupply_DC` requirements must be connected. The `cable_check_enable_imd_self_test` parameter ensures IEC 61851-23:2023 compliance.
+
+  </Tab>
+</Tabs>
+
+## Energy Management Integration
+
+EvseManager participates in EVerest's tree-based energy management by providing the `energy_grid` interface. Every update interval, it publishes an `energy_flow_request` up the tree that describes its current power needs and the limits it can accept. The EnergyManager responds by publishing `enforced_limits` back down to the EVSE, which EvseManager then enforces on the BSP (via PWM duty cycle for AC) or on the DC power supply (via current/power setpoints).
+
+Setting `request_zero_power_in_idle` to `true` is recommended in multi-EVSE deployments so that idle EVSEs do not hold capacity that could be given to charging EVSEs.
+
+## Error Handling
+
+EvseManager monitors errors from all its requirements. Most errors cause the EVSE to become **inoperative** until the error is cleared. Two categories of shutdown exist:
+
+- **Emergency Shutdown** (high-severity errors): PWM is immediately set to state F, the DC power supply is switched off, and contactors open without waiting.
+- **Error Shutdown** (medium/low-severity errors): If HLC is active the error is signaled to the EV via the protocol before powering down; the DC supply and contactor are then opened.
+
+The following errors do **not** cause the EVSE to become inoperative:
+- `evse_manager/Inoperative`, `evse_manager/MREC11CableCheckFault`
+- `evse_board_support/MREC3HighTemperature`, `evse_board_support/MREC18CableOverTempDerate`
+- Any `VendorWarning` from BSP, connector lock, AC RCD, isolation monitor, or power supply

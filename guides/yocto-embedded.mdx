@@ -1,0 +1,238 @@
+---
+title: 'Build Embedded Linux Images for EVerest with Yocto'
+sidebarTitle: 'Yocto & Embedded'
+description: 'Integrate EVerest into Yocto embedded Linux: add meta-everest, build production images, configure RAUC OTA with A/B slots, and use the cross-compile SDK.'
+---
+
+For production charging station deployments, EVerest strongly recommends using the **Yocto Project** as the embedded Linux build system. Yocto provides reproducible builds, an auto-generated cross-compilation toolchain, full software bill-of-materials tracking, and tight CI/CD integration — all critical for a maintainable production firmware lifecycle. EVerest ships the `meta-everest` Yocto layer and supports the current Yocto LTS releases (`scarthgap` and `kirkstone`).
+
+<Warning>
+  Setting up a Linux base system for a production product is a complex task that should be performed by domain experts. The reliability, security, and user experience of the end product depend heavily on a sound architecture. If your team lacks embedded Linux expertise, consider engaging a specialist.
+</Warning>
+
+## Why Yocto for EVerest?
+
+Yocto is the recommended Linux build environment for EVerest-based chargers for several reasons:
+
+- **Reproducible builds**: Every source package is tagged with a fixed version or Git hash, enabling bit-exact rebuilds.
+- **BSP availability**: Most System-on-Module (SoM) manufacturers ship Yocto Board Support Packages. Starting from a vendor BSP means a working Linux kernel before EVerest is added.
+- **Long-term support**: EVerest targets Yocto LTS releases. As of 2025, `scarthgap` is the supported release.
+- **Cross-compilation toolchain**: `bitbake -c populate_sdk my-image` generates a standalone SDK for fast development-host builds without a full Yocto build.
+- **CI/CD integration**: Full images and OTA bundles can be built in containers, with archives ensuring reproducibility years later.
+- **License tracking**: Yocto produces a software bill of materials for license compliance.
+
+<Note>
+  Running Yocto builds inside a virtual machine is not recommended. A full build requires 50–100 GB of disk space, benefits from a fast multi-core host, and the initial build (before cache population) can take many hours.
+</Note>
+
+## Adding the meta-everest Layer
+
+EVerest ships its Yocto layer as part of the EVerest repository:
+
+```text
+EVerest/yocto/<yocto-release>/meta-everest
+```
+
+Currently this includes layers for the `scarthgap` and `kirkstone` releases.
+
+**Integration steps:**
+
+1. Start with a vendor-provided Yocto BSP for your SoM or CPU.
+2. Adapt the device tree for your custom board to map all pins and kernel drivers correctly.
+3. Once the board boots cleanly with all hardware initialized, add `meta-everest` to `bblayers.conf`:
+
+```text
+# bblayers.conf
+BBLAYERS += "${TOPDIR}/../meta-everest"
+```
+
+4. Create your own layer for custom image files, EVerest config files, and any board-specific recipes. Use `meta-everest` as a structural reference and consult the [Yocto layer documentation](https://docs.yoctoproject.org/dev/dev-manual/layers.html).
+
+## Building an EVerest Yocto Image
+
+Create a custom image recipe based on `core-image-minimal`. The following example is based on the BelayBox hardware:
+
+```bash
+require recipes-core/images/core-image-minimal.bb
+
+SUMMARY = "EVerest image for PIONIX BelayBox development kit"
+
+LICENSE = "MIT"
+
+CORE_IMAGE_EXTRA_INSTALL += "\
+        everest-core \
+        libocpp \
+        openssh \
+        mosquitto \
+        tzdata \
+        pionixbox \
+        flutter-pi \
+        flutter-engine \
+        fontconfig \
+        ttf-roboto \
+        htop \
+        tmux \
+    "
+```
+
+The minimum required packages for a functional EVerest system are `everest-core` and `mosquitto`. As of 2026, `libocpp` is included inside `everest-core`; older EVerest versions required it as a separate package.
+
+<Note>
+  `tmux` is only required for the BringUp & Qualification tools. Include it in development images but consider removing it from production images to reduce attack surface.
+</Note>
+
+Useful diagnostic packages to include during development (omit from production):
+
+```bash
+tcpdump
+canutils
+tpm-tools
+open-plc-utils
+ethtool
+```
+
+Set the locale to UTF-8 in your image — otherwise the BringUp terminal UI will display incorrectly.
+
+## Cross-Compilation with the Yocto SDK
+
+For rapid iteration during development, generate the cross-compilation SDK from your Yocto build:
+
+```bash
+bitbake -c populate_sdk my-image
+```
+
+This produces a self-contained installer script that sets up a full sysroot and cross-toolchain on a development host. After installing it:
+
+```bash
+source /opt/poky/<sdk-version>/environment-setup-<target-triple>
+cmake ..   # uses the cross-compiler automatically
+```
+
+Use `rsync` to push updated binaries to the target without a full Yocto rebuild:
+
+```bash
+rsync -av ./dist/bin/ root@<target-ip>:/usr/bin/
+```
+
+## OTA Updates with RAUC
+
+Reliable over-the-air updates are essential for a deployed charging station. EVerest uses **RAUC** as its update system due to its security-first design and robust A/B partitioning support.
+
+RAUC advantages for EVerest deployments:
+
+- Cryptographically signed update bundles — signature is verified during installation, not just during download
+- A/B (atomic) slot switching — no window where a power loss can brick the device
+- Block-based partial downloads via HTTP streaming — only changed blocks are downloaded
+- Integrates with EVerest via D-Bus (`Linux_Systemd_Rauc` module)
+- OCPP-integrated: the CSMS sends the update bundle URL, EVerest triggers RAUC, and RAUC reports status back via OCPP
+
+### RAUC Integration in EVerest
+
+EVerest interacts with RAUC through the `Linux_Systemd_Rauc` module, which implements the `system` interface and exposes OTA operations to `OCPPmulti`. The full OCPP firmware update flow:
+
+1. CSMS sends a firmware update request containing an HTTP URL for the RAUC bundle.
+2. EVerest's `Linux_Systemd_Rauc` module calls `rauc install <url>` via D-Bus.
+3. RAUC streams the bundle directly into the inactive A/B slot (no extra disk space needed).
+4. RAUC switches the active boot slot atomically.
+5. On next boot into the new slot, EVerest marks the slot as `good` on successful startup and reports the result to the CSMS.
+
+You need to implement the following in your Yocto system:
+
+- A/B partitioning with `rootfs`, `boot`, and `data` partitions (see below)
+- RAUC `system.conf` for your hardware
+- RAUC bootloader backend (U-Boot, Barebox, or similar)
+- A signing PKI for update bundle signatures
+- A Yocto recipe that builds RAUC bundles as part of the image build
+
+<Tip>
+  If you use PHYTEC SoMs, the `ampliphy-rauc` or `ampliphy-secure` Yocto distributions already include working RAUC configurations, PKI examples, and A/B slot definitions.
+</Tip>
+
+Test RAUC manually before relying on the EVerest integration:
+
+```bash
+rauc install http://myupdateserver.com/version1.raucb
+# After reboot into new slot:
+rauc status mark-good
+```
+
+Verify slot state before and after:
+
+```bash
+rauc status
+```
+
+Expected output showing active and inactive slots:
+
+```text
+=== System Info ===
+Compatible:  mysystem-v1
+Booted from: rootfs.0 (system0)
+
+=== Slot States ===
+ [bootloader.0] (/dev/mmcblk1, boot-emmc, inactive)
+
+o [rootfs.1] (/dev/mmcblk1p6, ext4, inactive)
+       bootname: system1
+       boot status: good
+   [boot.1] (/dev/mmcblk1p2, vfat, inactive)
+
+x [rootfs.0] (/dev/mmcblk1p5, ext4, booted)
+       bootname: system0
+       mounted: /
+       boot status: good
+   [boot.0] (/dev/mmcblk1p1, vfat, active)
+```
+
+## A/B Partition Layout
+
+A recommended partition layout for RAUC-based OTA on an eMMC device:
+
+```bash
+# wic kickstart partition layout (BelayBox example)
+part --source bootimg-partition --ondisk mmcblk0 --fstype=vfat --label boot --active --align 4096 --fixed-size 512
+part --source bootimg-partition --ondisk mmcblk0 --fstype=ext4 --label boot_a --align 4096 --fixed-size 512
+part --source bootimg-partition --ondisk mmcblk0 --fstype=ext4 --label boot_b --align 4096 --fixed-size 512
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_A --align 4096 --fixed-size 3000
+part --source rootfs --ondisk mmcblk0 --fstype=ext4 --label root_B --align 4096 --fixed-size 3000
+part --ondisk mmcblk0 --fstype=ext4 --label factory_data --align 4096 --fixed-size 128
+part --ondisk mmcblk0 --fstype=ext4 --label overlay --align 4096 --fixed-size 7000
+```
+
+Partition purposes:
+
+| Partition | Description |
+|---|---|
+| `boot_a` / `boot_b` | A/B boot partitions (bootloader + FIT image with kernel, initrd, DTB) |
+| `root_A` / `root_B` | A/B root filesystem partitions (read-only) |
+| `factory_data` | Read-only; programmed once during manufacturing (serial numbers, region config) |
+| `overlay` | Persistent user data mounted as overlayfs over `/var` (logs, certificates, OCPP database) |
+
+The `overlay` partition is shared between both root slots — configuration and runtime data survive rootfs updates. If a config file format change is introduced in an update, a first-boot migration step in the new rootfs must handle adapting the overlay data before falling back is no longer possible.
+
+For more robust rollback support, consider using **two overlay partitions** (one per root slot) with a migration task in the initrd that transfers and converts config files when switching slots.
+
+## System Performance on Embedded Hardware
+
+On resource-constrained SoMs, CPU scheduling can affect ISO 15118 timing compliance:
+
+```bash
+# Set EVerest's systemd service to high scheduling priority
+# In the .service file:
+Nice=-20
+```
+
+Use a **preemptive kernel** (`CONFIG_PREEMPT`) to reduce user-space latency. This is especially important during the ISO 15118 `CableCheck` phase, which has strict timing requirements (the full phase must complete within ~25–30 seconds for broad EV compatibility).
+
+If other processes compete for CPU during charging, set their nice levels higher (closer to 19) to ensure EVerest gets priority.
+
+## Reference Hardware and BelayBox
+
+The [PionixPublic dev-hardware-yocto repository](https://github.com/PionixPublic/dev-hardware-yocto) provides a complete, working Yocto build for the BelayBox development kit. It serves as a production-quality reference for:
+
+- `meta-everest` integration
+- RAUC OTA with A/B slots on eMMC
+- Security hardening (non-root EVerest user, admin panel disabled)
+- Device tree for the BelayBox hardware
+
+Clone the repository and read its README for build instructions. Even if you are not using BelayBox hardware, the image recipes and partition layout are directly adaptable to other i.MX6ULL or similar SoM-based designs.

@@ -1,0 +1,150 @@
+---
+title: 'EVerest System Architecture and Module Communication'
+sidebarTitle: 'Architecture'
+description: 'EVerest modules are independent processes communicating via MQTT, orchestrated by a long-lived manager that exposes the Configuration and Lifecycle APIs.'
+---
+
+EVerest is the open-source firmware stack for EV charging stations, built on a modular, microservice-like architecture. Every functional capability — from hardware drivers to protocol stacks to energy management — is encapsulated in a standalone module process. These processes communicate exclusively through a central MQTT broker, keeping modules fully decoupled from one another. A long-lived manager process supervises the entire deployment: it spawns module processes, monitors their readiness, and handles restarts, shutdowns, and configuration changes — all without itself restarting.
+
+## The Three Core Components
+
+Every EVerest deployment is composed of exactly three kinds of components that work together at runtime.
+
+<CardGroup cols={3}>
+  <Card title="Module Instances" icon="cube">
+    Independent OS processes, each providing a specific function. There can be multiple instances of the same module type, for example one `EvseManager` per physical connector.
+  </Card>
+  <Card title="MQTT Broker" icon="arrows-left-right">
+    The communication backbone (mosquitto). All inter-module calls and variable subscriptions are routed through MQTT topics using a well-defined naming scheme.
+  </Card>
+  <Card title="Manager Process" icon="sliders">
+    A single long-lived process that orchestrates module lifecycle, hosts the Configuration Service and Lifecycle API, and remains available even when no module is running.
+  </Card>
+</CardGroup>
+
+## How Modules Communicate
+
+Modules communicate via two primitives defined in interface contracts:
+
+- **CMDs (Commands)** — synchronous remote procedure calls. The calling module publishes a request to `everest/{module_instance_id}/{impl_id}/cmd` and waits for a response on the same topic.
+- **VARs (Variables)** — asynchronous publications. A module publishes state updates to `everest/{module_instance_id}/{impl_id}/var`, and any number of other modules can subscribe to receive those updates.
+
+This means all communication — whether a module is calling a function or broadcasting sensor data — uses MQTT publish/subscribe mechanics. Modules never call each other directly; the broker is always in the middle.
+
+<Note>
+  The topic prefix `everest` may differ in some end-to-end test configurations, but the `{module_instance_id}/{impl_id}/cmd` and `/var` suffix pattern is always preserved.
+</Note>
+
+## Manager Lifecycle States
+
+The manager process runs a well-defined state machine that governs how and when modules are started, stopped, and restarted. Understanding these states is important when diagnosing startup failures or integrating tooling with the Lifecycle API.
+
+<Accordion title="Full Manager State Machine">
+
+| State | Meaning |
+|---|---|
+| `Idle` | Manager is alive, no modules running (before startup or after a stop) |
+| `Initializing` | Reading configuration, setting up internal infrastructure |
+| `StartingModules` | Spawning module processes; waiting for all to report ready |
+| `Running` | All non-ignored modules are ready; system is operational |
+| `ShutdownRequested` | Normal stop (`SIGINT`/`SIGTERM`) received; modules being drained |
+| `CrashShutdownInProgress` | An unexpected module exit triggered a drain of remaining modules |
+| `RestartRequested` | Administrative restart requested; modules being drained before reload |
+| `ForceTerminating` | Drain deadline exceeded; remaining modules receiving `SIGTERM`/`SIGKILL` |
+| `ShutdownFinalizing` | All module processes gone; manager decides next action (exit, restart, or idle) |
+| `Exiting` | Final cleanup before the manager process itself exits |
+
+</Accordion>
+
+The happy-path startup sequence is: `Idle` → `Initializing` → `StartingModules` → `Running`.
+
+Each state transition is reported to the Configuration API as a module status event. External tooling (such as `management-api-cli`) can observe these events to drive automated workflows.
+
+<Steps>
+  <Step title="Manager starts">
+    The manager reads the run configuration (from `--config`, `--db`, or built-in defaults) and initializes the Configuration Service database.
+  </Step>
+  <Step title="Module processes spawned">
+    The manager enters `StartingModules`, publishes startup metadata to MQTT, and spawns each module process listed in `active_modules`.
+  </Step>
+  <Step title="Modules report ready">
+    Each module performs its initialization, calls `ready()`, and publishes a ready signal on MQTT. The manager tracks these signals.
+  </Step>
+  <Step title="System enters Running">
+    Once every non-ignored module has reported ready, the manager transitions to `Running` and publishes the global ready signal on `{mqtt_everest_prefix}ready`.
+  </Step>
+</Steps>
+
+## Multi-Language Module Support
+
+EVerest provides framework integration for modules written in four languages. The choice of language does not affect how a module appears on the MQTT bus — all languages produce the same command/variable semantics.
+
+<Tabs>
+  <Tab title="C++">
+    The primary and most feature-complete language. The `ev-cli` code generator produces typed header files (`Interface.hpp`, `Implementation.hpp`, `Types.hpp`) and module class skeletons directly from YAML interface definitions.
+
+    ```cpp
+    void PingServerModule::init() {
+        invoke_init(*p_if_impl_id_ping);
+    }
+
+    void PingServerModule::ready() {
+        invoke_ready(*p_if_impl_id_ping);
+    }
+    ```
+  </Tab>
+  <Tab title="Python">
+    Python modules use the EVerest Python bindings. The same `provides`/`requires` structure from the manifest YAML applies; the framework calls `init()` and `ready()` lifecycle hooks.
+  </Tab>
+  <Tab title="JavaScript">
+    JavaScript modules run in a Node.js environment. Useful for rapid prototyping and integration with web-oriented tooling.
+  </Tab>
+  <Tab title="Rust">
+    Rust modules use the EVerest Rust bindings, suitable for embedded targets where memory safety guarantees are required alongside native performance.
+  </Tab>
+</Tabs>
+
+## 3-Tier Module Mapping (EVSE/Connector)
+
+EVerest supports a three-tier physical mapping inspired by OCPP's charging station → EVSE → connector model. Individual modules and even specific interface implementations can carry a `mapping` annotation in the run configuration to declare which EVSE and connector they belong to.
+
+```yaml
+connector_1:
+  module: EvseManager
+  mapping:
+    module:
+      evse: 1
+      connector: 1
+```
+
+This mapping is used by the error framework, energy management, and OCPP modules to correctly associate events with the right physical tier. Without an explicit mapping, a module is considered to belong to the whole charging station (EVSE `0`).
+
+Modules can read mapping information at runtime through the generated C++ API:
+
+```cpp
+// Mapping of a requirement
+r_name_of_the_requirement->get_mapping()
+
+// Mapping of an interface implementation
+p_name_of_an_implementation->get_mapping()
+
+// Mapping of the current module
+this->info.mapping
+```
+
+Each call returns an optional `Mapping` struct with `evse` and `connector` integer fields.
+
+<Tip>
+  Module mapping is required for OCPP smart charging and the energy management tree to correctly attribute limits and errors to specific EVSEs. Always configure mappings when deploying multi-EVSE setups.
+</Tip>
+
+## Protocols and Standards
+
+EVerest ships with ready-to-use module implementations for all major EV charging standards:
+
+- **OCPP 1.6, 2.0.1, and 2.1** — back-office communication with charge management systems
+- **ISO 15118-2, -3, and -20** — high-level communication (HLC) including Plug & Charge and bidirectional charging
+- **IEC 61851** — basic AC charging with control pilot signaling
+- **DIN SPEC 70121** — predecessor to ISO 15118-2 used by early DC charging deployments
+
+Hardware drivers are available for board support packages (BSPs), powermeters, isolation monitors, DC power supplies, RFID/NFC readers, and payment terminals, allowing EVerest to run on a wide range of physical charging station hardware.

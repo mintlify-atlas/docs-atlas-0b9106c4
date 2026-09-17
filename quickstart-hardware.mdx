@@ -1,0 +1,261 @@
+---
+title: 'Bring Up EVerest on Charging Hardware'
+sidebarTitle: 'HW Quickstart'
+description: 'Bring EVerest up on real charging hardware step by step, from board support verification and powermeter testing to a live AC or DC charging session.'
+---
+
+Hardware bring-up in EVerest is the process of validating each physical subsystem of a charging station — control pilot signaling, relays, powermeters, isolation monitors, and DC power supplies — in isolation before assembling them into a complete charging configuration. EVerest provides dedicated **BringUp modules** specifically designed for this incremental verification process, reducing the risk of complex multi-component failures during integration.
+
+<Warning>
+  Hardware bring-up involves working with high voltages that can cause severe injury including death. All steps that involve live electrical circuits must be performed by trained personnel following all applicable safety regulations.
+</Warning>
+
+## Hardware Requirements
+
+EVerest runs on any Linux-based system that provides the required dependencies. For production deployments, Yocto-based images are strongly recommended. The minimum hardware requirements scale with the number of active modules:
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| CPU | imx6ULL or comparable | imx93 or AM62x |
+| RAM | 512 MB | 1 GB or more |
+| Flash | 1 GB | 4 GB or more |
+
+For new product development, using one of the supported EVerest development kits is the fastest path to a working system. For custom hardware, plan for a Linux BSP, SSH access, and a cross-compilation toolchain.
+
+## Development Kit Options
+
+Three reference development kits are available for evaluating EVerest on real hardware before committing to a custom design:
+
+<CardGroup cols={1}>
+  <Card title="BelayBox — AC All-Integrated PCB Kit" icon="plug">
+    Touch screen display, up to 22 kW three-phase AC charging, integrated RCD, PCB power meter, RFID reader, and a Raspberry Pi CM4 compute module. Available at [shop.pionix.com](https://shop.pionix.com). Schematics and MCU firmware are open source at [PionixPublic/reference-hardware](https://github.com/PionixPublic/reference-hardware). A pre-built Yocto image with RAUC OTA, OCPP, and ISO 15118 is available at [PionixPublic/dev-hardware-yocto](https://github.com/PionixPublic/dev-hardware-yocto).
+  </Card>
+  <Card title="phyVERSO — AC DIN Rail / Dual Public Charging" icon="bolt">
+    Dual-socket AC charging with DIN rail contactors and powermeters from Phytec. Production-ready and suitable for volume manufacturing. Custom derivatives with different interfaces and form factors are available from Phytec.
+  </Card>
+  <Card title="phyVERSO DC — DC DIN Rail / Dual Public Charging" icon="battery-charging">
+    DC-capable variant of the phyVERSO (both ports configurable for AC or DC, or mixed). Includes a 40 kW DC power supply, isolation monitor, and powermeter in a complete evaluation kit.
+  </Card>
+</CardGroup>
+
+<Note>
+  Development kits are optimized for developer accessibility and are not certified products. They are ideal for exploring EVerest features and parallelizing hardware and software development, but require additional certification work before production deployment.
+</Note>
+
+## BringUp Modules
+
+EVerest's BringUp modules provide manual control over individual hardware drivers through a split-screen `tmux` interface. Each BringUp module connects to exactly one driver module, letting you exercise commands and observe variables in isolation — without loading the rest of the charging station stack.
+
+The `run_tmux_helper.sh` script manages the session. It takes a BringUp configuration file and the path to the EVerest installation as arguments.
+
+On an embedded target with EVerest installed under `/usr`:
+
+```bash
+/etc/everest/run_tmux_helper.sh /etc/everest/bringup/myconf.yaml /usr
+```
+
+If you are using a cross-compiled development version installed under `/var/everest`:
+
+```bash
+/etc/everest/run_tmux_helper.sh /etc/everest/bringup/myconf.yaml /var/everest
+```
+
+You can also run a pure SIL version of the BringUp tool on your development PC to get familiar with the workflow before touching real hardware. From the `build/` directory:
+
+```bash
+./dist/etc/everest/run_tmux_helper.sh \
+  ../config/bringup/config-bringup-isolation-monitor-sil.yaml ./dist
+```
+
+A BringUp configuration file looks like this — each BringUp module is marked `standalone: true` so it runs in its own tmux window:
+
+```yaml
+active_modules:
+  bsp_ui:
+    standalone: true
+    module: BUIsolationMonitor
+    connections:
+      imd:
+        - implementation_id: main
+          module_id: iso_monitor
+  powersupply_ui:
+    standalone: true
+    module: BUPowerSupplyDC
+    connections:
+      psu:
+        - implementation_id: main
+          module_id: powersupply
+  iso_monitor:
+    module: IMDSimulator
+  powersupply:
+    module: DCSupplySimulator
+```
+
+## Hardware Bring-Up Sequence
+
+<Steps>
+  <Step title="Prepare the Development Environment">
+    Before starting, set up the following on your development machine and target hardware:
+
+    - A working cross-compiler (generate the SDK from Yocto with `bitbake -c populate_sdk my-image`)
+    - SSH access to the target
+    - Verify all hardware interfaces (UART, SPI, I2C, CAN) are accessible from Linux
+    - Include `tmux` in your Yocto image
+    - Recommended: enable Unicode support on the target terminal for the BringUp tool UI
+
+    Stop any running EVerest system service to avoid conflicts during manual bring-up:
+
+    ```bash
+    systemctl stop everest
+    ```
+  </Step>
+
+  <Step title="Verify Control Pilot (CP) Signaling">
+    The control pilot signal is the foundation of both AC and DC charging. Unstable CP detection is one of the most common causes of charging session failures and relay opening under load. This step must be completed before any other bring-up.
+
+    Use the BSP BringUp module with your board support driver. An example configuration for the BelayBox is provided at `config/bringup/config-bringup-yetidriver.yaml` — adapt it to your BSP driver.
+
+    Connect an EV simulator capable of setting CP states A/B/C/E and simulating diode failure and PE loss. Work through the checklist:
+
+    - **State A (no car):** Constant +12 V ±5% on the CP line. Verify ripple noise below 100 mV VPP.
+    - **State F:** Constant −12 V ±5%. Verify ripple noise below 100 mV.
+    - **PWM at 5% duty cycle:** Frequency must be 980–1020 Hz (target: 1000 Hz). High pulse duration at 5% duty cycle must be 50 µs. Rise time below 10 µs; fall time below 13 µs.
+    - **State E / CP error:** CP line must read 0 V constantly.
+    - **Diode failure detection:** Short the diode on the EV side; the BSP must report a `DiodeFault` error.
+    - **Short state changes:** Toggle B → C → B with ~200 ms in state C. The BSP must report the short state C reliably (critical for ISO 15118-3 BCB toggle wakeup detection).
+
+    Verify state detection over the full resistor range:
+
+    | State | Minimum R | Nominal R | Maximum R |
+    |-------|-----------|-----------|-----------|
+    | B (car connected, not ready) | 1870 Ω | 2740 Ω | 4610 Ω |
+    | C (car ready, charging) | 909 Ω | 1300 Ω | 1723 Ω |
+
+    Test with several real cars once basic stability is confirmed, as EV-side CP implementation varies across vendors.
+  </Step>
+
+  <Step title="Verify Relays">
+    With CP verified, test the AC output contactor or DC output relay using the BSP BringUp module's **Allow power on** and **Force power off** buttons.
+
+    Key requirements to verify:
+
+    - **Allow power on → relay closes** only when CP is in state C, with a `PowerOn` feedback event within a short period (target under 300 ms).
+    - **Force power off → relay opens immediately**, with a `PowerOff` feedback event.
+    - **State C → B transition:** Relay must open within 100 ms (IEC 61851-1 requirement).
+    - **PWM stopped in state C:** Relay must open after a minimum of 6 seconds (IEC 61851-1:2017 Table A.6, sequence 10.2).
+    - **No duplicate events:** Each relay state change must produce exactly one `PowerOn` or `PowerOff` event — no bouncing.
+  </Step>
+
+  <Step title="Verify Proximity Pilot (PP) — AC Type 2 Only">
+    For AC chargers with a Type 2 socket, verify that the BSP reports the correct cable ampacity for the full resistor range:
+
+    | Cable Ampacity | Min R | Nominal R | Max R |
+    |----------------|-------|-----------|-------|
+    | 13 A | 1100 Ω | 1500 Ω | 2460 Ω |
+    | 20 A | 400 Ω | 680 Ω | 936 Ω |
+    | 32 A | 164 Ω | 220 Ω | 308 Ω |
+    | 63 A 3ph / 70 A 1ph | 80 Ω | 100 Ω | 140 Ω |
+
+    Values below 60 Ω or above 4500 Ω must be reported as an error (`None` ampacity). PP must also be monitored continuously during the charging session.
+  </Step>
+
+  <Step title="Verify the Powermeter">
+    Use the powermeter BringUp module with your powermeter driver. Example configurations are provided for DZG (`config-bringup-DZG.yaml`) and LEM (`config-bringup-LEM.yaml`) meters.
+
+    ```bash
+    /etc/everest/run_tmux_helper.sh \
+      /etc/everest/bringup/config-bringup-mypowermeter.yaml /usr
+    ```
+
+    Verify:
+
+    - Measurements arrive regularly (at least once per second).
+    - Imported energy in Wh and timestamp are present and correct.
+    - For bidirectional meters, verify exported energy values as well.
+    - If the meter supports **Eichrecht** (German fiscal metering): click **Start Transaction** and verify the reply arrives within a few seconds; click **Stop Transaction** and confirm the signed receipt.
+  </Step>
+
+  <Step title="DC Only — Verify DC Power Supply and Isolation Monitor">
+    For DC chargers, two additional subsystems must be verified before attempting a charging session.
+
+    **DC Power Supply:** Use the `BUPowerSupplyDC` BringUp module with your power supply driver. Example configurations are provided for Huawei (`config-bringup-huawei.yaml`), UUGreen (`config-bringup-uugreen.yaml`), and API-based supplies (`config-bringup-api-powersupply.yaml`).
+
+    Key checks:
+    - Reported capabilities match manufacturer specifications.
+    - Output voltage reaches the set value within 6 seconds of switching on.
+    - Voltage and current accuracy: ±10 V for voltage, ±1.5% or ±0.5 A for current (IEC 61851-1:2023 CC.6.3).
+    - No overshoot when ramping from minimum to maximum output voltage.
+    - Measured output voltage is reported back to EVerest at least once per second.
+    - Power supply switches off within ~10–20 seconds after communication loss.
+
+    **Isolation Monitor:** Use the `BUIsolationMonitor` BringUp module. The isolation monitor must comply with IEC 61557-8. Example SIL config at `config/config-bringup-isolation-monitor-sil.yaml`.
+
+    Key checks:
+    - With the power supply at 500 V, the IMD reports the correct bus voltage.
+    - Baseline isolation resistance is very high (≥1 MΩ in an unloaded lab environment).
+    - Connecting a 100 kΩ resistor from minus wire to protective earth is detected within the IMD's specified response time (e.g., < 10 s for Bender devices).
+    - IMD self-test completes within ~10 s (longer self-test times cause `CableCheck` timeouts with some EVs).
+  </Step>
+
+  <Step title="First Charging Session">
+    Once all individual components have been verified, assemble a minimal charging configuration file and attempt a complete charging session.
+
+    For AC, create a configuration with your BSP driver and one powermeter. Set `disable_authentication: true` in `EvseManager` to skip the auth module for initial testing:
+
+    ```bash
+    manager /path/to/simple_ac_config.yaml
+    ```
+
+    Watch the manager output for the line `Ready to start charging`. Then connect an EV simulator:
+
+    1. Set state B → wait for PWM → set state C → relay clicks → charging starts.
+    2. Set state B to pause → relay opens → state shows `ChargingPausedByEV`.
+    3. Set state C to resume → relay closes.
+    4. Set state B then state A (unplug) → PWM stops → relay opens → session ends.
+
+    For **DC**, follow the staged approach: first verify zero-power charging (ISO 15118 handshake through `PreCharge` with plus wire disconnected), then limited-power charging (5 kΩ resistor in the plus wire to limit current), and finally full-power charging with the wire directly connected.
+
+    Once basic charging is stable, extend the configuration to add the ISO 15118-2 stack (`EvseV2G`) and SLAC module (`EvseSlac` or `SlacSimulator`) for Plug & Charge testing.
+  </Step>
+</Steps>
+
+## Supported Hardware
+
+EVerest ships ready-to-use drivers for a wide range of charging station hardware:
+
+<Accordion title="Board Support Packages (BSPs)">
+  BSP modules implement the `evse_board_support` interface and handle control pilot signaling, relay control, and proximity pilot measurement. The BelayBox BSP (Yeti driver) and phyVERSO BSP are available as open-source references. Use these as starting points for porting EVerest to custom MCU-based boards.
+</Accordion>
+
+<Accordion title="Powermeters">
+  Supported powermeter drivers include DZG, LEM, KEBA, and Modbus-based meters. Powermeter modules implement the `powermeter` interface, exposing energy counters, instantaneous power measurements, and — for Eichrecht-compliant meters — signed transaction start/stop receipts.
+</Accordion>
+
+<Accordion title="Isolation Monitors">
+  Bender and compatible IEC 61557-8 isolation monitors are supported via dedicated driver modules implementing the `isolation_monitor` interface. The IMD reports isolation resistance measurements to EVerest, which uses them to gate the `CableCheck` phase of DC charging.
+</Accordion>
+
+<Accordion title="DC Power Supplies">
+  Drivers for Huawei, UUGreen, and API-based DC power supplies implement the `power_supply_DC` interface. EVerest controls output voltage and current setpoints and reads back measured values throughout the ISO 15118 charging sequence.
+</Accordion>
+
+<Accordion title="RFID/NFC and Payment Terminals">
+  RFID and NFC reader drivers implement the `auth_token_provider` interface, feeding RFID tokens into the `Auth` module. Payment terminal integrations are supported via the same token provider interface.
+</Accordion>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="AC BringUp Detail" icon="plug" href="https://everest.github.io/nightly/how-to-guides/bringup/ac.html">
+    Detailed RCD, connector lock, and ISO 15118-2 verification steps for AC hardware.
+  </Card>
+  <Card title="DC BringUp Detail" icon="bolt" href="https://everest.github.io/nightly/how-to-guides/bringup/dc.html">
+    Full DC power supply, isolation monitor, and IEC 61851-23 compliance checklist.
+  </Card>
+  <Card title="Linux & Yocto Guides" icon="linux" href="https://everest.github.io/nightly/explanation/linux-yocto/index.html">
+    Set up a Yocto build environment, cross-compile EVerest, and deploy OTA updates.
+  </Card>
+  <Card title="Debugging ISO 15118" icon="bug" href="https://everest.github.io/nightly/how-to-guides/debug-iso15118.html">
+    Use Wireshark and EVerest's session logging to diagnose ISO 15118 communication issues.
+  </Card>
+</CardGroup>

@@ -1,0 +1,378 @@
+---
+title: 'Hardware Driver Modules in EVerest'
+sidebarTitle: 'Hardware Drivers'
+description: 'Built-in hardware driver modules for BSPs, powermeters, DC power supplies, isolation monitors, NFC/RFID readers, and payment terminals in EVerest.'
+---
+
+EVerest follows a strict separation between the high-level charging logic (EvseManager, Auth, OCPP) and the hardware it runs on. All hardware-specific code lives in driver modules under `modules/HardwareDrivers/`. Each driver implements one or more EVerest interfaces, allowing you to swap hardware without touching any other module. This page catalogs every built-in hardware driver, describes its interface contracts, and explains how to wire drivers into your EVerest configuration.
+
+## Driver Categories
+
+<CardGroup cols={3}>
+  <Card title="BSP / Charge Controllers" icon="microchip">
+    Board Support Packages — implement `evse_board_support`, the abstraction for control pilot, relays, RCD, and motor lock
+  </Card>
+  <Card title="Power Meters" icon="gauge">
+    AC and DC energy meters — implement the `powermeter` interface for billing and energy management
+  </Card>
+  <Card title="DC Power Supplies" icon="bolt">
+    AC/DC converters for DC fast charging — implement `power_supply_DC` for current/voltage control
+  </Card>
+  <Card title="Isolation Monitors" icon="shield">
+    DC ground fault / isolation resistance monitors — implement `isolation_monitor` for cable check compliance
+  </Card>
+  <Card title="NFC / RFID Readers" icon="id-card">
+    Token providers — implement `auth_token_provider` to feed the Auth module
+  </Card>
+  <Card title="Payment Terminals" icon="credit-card">
+    In-person payment acceptance — implement `payment_terminal` for contactless payment at the charger
+  </Card>
+</CardGroup>
+
+---
+
+## BSP / Charge Controller Modules
+
+A Board Support Package (BSP) module is mandatory for every EvseManager instance. It provides the `evse_board_support` interface, which abstracts the hardware control pilot circuit, main contactors/relays, AC residual-current device (RCD), and connector locking motor. Most BSP modules communicate with a microcontroller over a serial port or CAN bus; the MCU handles the real-time electrical safety loop while the BSP driver translates EVerest commands into the MCU's protocol.
+
+<Accordion title="YetiDriver — Pionix Yeti EVSE Controller v1.0">
+
+The `YetiDriver` is the reference BSP for the open-hardware Yeti board designed by Pionix. It communicates over a serial port (default `/dev/ttyUSB0`) and provides a complete set of EVSE support interfaces:
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `board_support` (`evse_board_support`) | Control pilot, relays, hardware capabilities |
+| `rcd` (`ac_rcd`) | On-board residual current device |
+| `connector_lock` (`connector_lock`) | Motor-lock actuator |
+| `powermeter` (`powermeter`) | Yeti internal power meter |
+
+**Key config:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `serial_port` | `/dev/ttyUSB0` | Serial device path |
+| `baud_rate` | `115200` | Communication baud rate |
+| `caps_min_current_A` | `-1` | Minimum AC current capability (-1 = read from firmware) |
+| `caps_max_current_A` | `-1` | Maximum AC current capability (-1 = read from firmware) |
+| `reset_gpio_chip` | `gpiochip0` | GPIO chip for hardware reset (empty to disable) |
+| `reset_gpio` | `27` | GPIO pin number for hardware reset |
+
+</Accordion>
+
+<Accordion title="PhyVersoBSP — Phytec PhyVerso Dual-Connector Controller">
+
+The `PhyVersoBSP` driver targets the Phytec PhyVerso EV charging controller running Pionix MCU firmware. It supports **two independent connectors** from a single module instance, exposing a separate `evse_board_support` implementation for each:
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `connector_1` (`evse_board_support`) | Connector 1 — control pilot, relays, motor lock |
+| `connector_2` (`evse_board_support`) | Connector 2 — same capabilities |
+
+Notable config parameters include per-connector import/export current and phase count limits, plus a `dc` boolean to configure a connector for DC mode.
+
+</Accordion>
+
+<Accordion title="MicroMegaWattBSP — Micro Mega Watt DC Charging Tester v1.0">
+
+The `MicroMegaWattBSP` driver targets the Pionix Micro Mega Watt DC Charging Tester (µMWC), an open-hardware DC EVSE development platform. It provides both BSP and DC power supply interfaces on a single module:
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `dc_supply` (`power_supply_DC`) | DC/DC power supply control |
+| `powermeter` (`powermeter`) | Integrated power meter |
+| `board_support` (`evse_board_support`) | Control pilot, relays, RCD, motor lock |
+
+**Key config:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `serial_port` | `/dev/ttyUSB0` | Serial device path |
+| `dc_max_voltage` | `1000` | Maximum supported DC output voltage (V) |
+
+</Accordion>
+
+<Accordion title="TIDA010939 — Texas Instruments Reference Design">
+
+The `TIDA010939` driver supports the Texas Instruments TIDA-010939 reference design for AC EVSE. It provides BSP interfaces for a single connector:
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `board_support` (`evse_board_support`) | Control pilot, relays, motor lock |
+| `rcd` (`ac_rcd`) | On-board RCD |
+| `connector_lock` (`connector_lock`) | Motor-lock actuator |
+
+</Accordion>
+
+<Accordion title="AdAcEvse22KwzKitBSP — Analog Devices AD-ACEVSE22KWZ-KIT">
+
+The `AdAcEvse22KwzKitBSP` driver targets the Analog Devices AD-ACEVSE22KWZ-KIT 22 kW AC EVSE reference design. It provides:
+
+| Provided interface | Description |
+|--------------------|-------------|
+| `board_support` (`evse_board_support`) | Control pilot, relays |
+| `rcd` (`ac_rcd`) | On-board RCD |
+| `connector_lock` (`connector_lock`) | Motor-lock actuator |
+| `powermeter` (`powermeter`) | Integrated power measurement |
+
+</Accordion>
+
+---
+
+## Power Meter Modules
+
+Power meters implement the `powermeter` interface and are connected to EvseManager (`powermeter_grid_side` or `powermeter_car_side` requirements) or to EnergyNode (`powermeter` requirement). Grid-side meters feed energy management; car-side meters (DC charging only) are used for billing when present.
+
+| Module | Description | Communication |
+|--------|-------------|---------------|
+| `AST_DC650` | AST DC650 series powermeter | Modbus RTU (serial) |
+| `Acrel_DJSF1352_RN` | Acrel DJSF1352-RN DC powermeter | Modbus RTU (serial) |
+| `CarloGavazzi_EM580` | Carlo Gavazzi EM580 AC energy meter | Modbus RTU (serial) |
+| `DZG_GSH01` | DZG GSH01 AC/DC powermeter | Modbus RTU (serial) |
+| `GenericPowermeter` | Configurable generic powermeter via model file | Modbus RTU (serial) |
+| `IsabellenhuetteIemDcr` | Isabellenhuette IEM-DCR DC meter | HTTP/REST (Ethernet) |
+| `LemDCBM400600` | LEM DCBM 400/600 DC billing meter | HTTP/REST (Ethernet) |
+| `RsIskraMeter` | Iskra AC meter (Rust-based driver) | Modbus RTU (serial) |
+
+<Accordion title="Modbus RTU meters — common configuration">
+
+All serial Modbus meters share this basic config pattern:
+
+```yaml
+config_implementation:
+  main:
+    powermeter_device_id: 1    # Modbus device address on the RS-485 bus
+```
+
+They are typically connected to EVerest via a `SerialCommHub` module, which multiplexes multiple Modbus devices over a single serial port.
+
+</Accordion>
+
+<Accordion title="LemDCBM400600 — Ethernet billing meter">
+
+```yaml
+config_implementation:
+  main:
+    ip_address: "192.168.1.100"
+    port: 80
+```
+
+The LEM DCBM 400/600 supports signed OCMF measurement records for legally relevant billing. Connect it as `powermeter_car_side` in EvseManager for DC billing.
+
+</Accordion>
+
+<Accordion title="GenericPowermeter — model-file driven">
+
+The `GenericPowermeter` module reads its register map from a YAML model file selected by the `model` config parameter:
+
+```yaml
+config_implementation:
+  main:
+    model: "carlo_gavazzi_em340"
+```
+
+This allows adding support for additional Modbus meters without recompiling EVerest — only a new model YAML is required.
+
+</Accordion>
+
+---
+
+## DC Power Supply Modules
+
+DC power supply modules implement the `power_supply_DC` interface, which EvseManager uses to set the output voltage and current setpoints during DC charging (precharge and current demand phases).
+
+| Module | Description | Communication | Max Modules |
+|--------|-------------|---------------|-------------|
+| `DPM1000` | SCU Power DPM 1000-30 | CAN | 1 |
+| `Huawei_R100040Gx` | Huawei R100040Gx (stackable) | CAN (`can0`) | Multiple (auto-detect or explicit) |
+| `Huawei_V100R023C10` | Huawei FusionCharge V100R023C10 | Ethernet | 1 per host |
+| `InfyPower` | InfyPower ACDC (V1.13 CAN protocol) | CAN | Multiple (fixed or group discovery) |
+| `InfyPower_BEG1K075G` | InfyPower BEG1K075G | CAN | 1 (group dial 0) |
+| `UUGreenPower_UR1000X0` | UUGreenPower UR1000X0 | CAN | 1 |
+| `Winline` | Winline ACDC modules | CAN | Multiple (fixed or group discovery) |
+
+<Accordion title="Huawei_R100040Gx — CAN-bus stackable supply">
+
+Multiple Huawei R100040Gx units can be stacked to increase total power. The module auto-detects units on the CAN bus by default:
+
+```yaml
+config_implementation:
+  main:
+    can_device: "can0"
+    module_addresses: ""        # "" = auto-detect all modules on the bus
+    max_export_current_A: 100   # shared across all stacked modules
+```
+
+To use specific units only, list their CAN addresses:
+
+```yaml
+    module_addresses: "120,121"
+```
+
+The driver automatically shares the requested current across all detected or listed modules.
+
+</Accordion>
+
+<Accordion title="InfyPower — group discovery mode">
+
+InfyPower supports two addressing modes. In group discovery mode, set `module_addresses` to `""` and use `group_address` to match the physical dial setting on the PSU:
+
+```yaml
+config_implementation:
+  main:
+    can_device: "can0"
+    module_addresses: ""
+    group_address: 1
+```
+
+</Accordion>
+
+---
+
+## Isolation Monitor Modules
+
+Isolation monitors implement the `isolation_monitor` interface, which EvseManager connects to via its `imd` requirement. They are mandatory for IEC 61851-23:2023-compliant DC cable check. EVerest includes drivers for two commercial IMDs:
+
+<Accordion title="Bender_isoCHA425HV">
+
+Driver for the Bender isoCHA425HV, a widely used DC isolation monitoring device. Communicates over Modbus RTU.
+
+**Key config:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `imd_device_id` | `3` | Modbus address of the IMD (0–255) |
+| `r1_prealarm_kohm` | — | Internal pre-alarm resistance threshold in kΩ |
+
+The Bender IMD requires multiple seconds to produce a stable isolation reading. Set `cable_check_wait_number_of_imd_measurements` to at least `10` (at 1 Hz sample rate) on the EvseManager config when using this device.
+
+</Accordion>
+
+<Accordion title="DoldRN5893">
+
+Driver for the DOLD RN5893 isolation monitoring device, connecting via Modbus RTU.
+
+**Key config:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `device_id` | — | Modbus address set via hardware potentiometers |
+| `self_test_timeout_s` | `30` | Maximum time (seconds) allowed for the self-test sequence |
+| `keep_measurement_active` | `false` | Keep isolation measurement active even after a `stop` call |
+
+</Accordion>
+
+---
+
+## NFC / RFID Reader Modules
+
+NFC and RFID reader modules implement `auth_token_provider` and publish tokens to the Auth module when a card or device is presented. All three built-in readers connect directly to the Auth module via its `token_provider` requirement.
+
+| Module | Description | Interface |
+|--------|-------------|-----------|
+| `PN532TokenProvider` | NXP PN532 RFID/NFC reader | Serial port |
+| `PN7160TokenProvider` | NXP PN7160 NFC controller | Native NXP library |
+| `NxpNfcFrontendTokenProvider` | NXP NFC Reader Library (generic NXP frontends) | Native NXP library |
+
+All three readers support a `token_debounce_interval_ms` configuration to prevent duplicate tokens from a single tap being published multiple times.
+
+```yaml
+active_modules:
+  rfid_reader:
+    module: PN532TokenProvider
+    config_implementation:
+      main:
+        serial_port: "/dev/ttyAMA0"
+    connections: {}   # no requirements
+```
+
+Connect the reader to the Auth module's `token_provider` requirement:
+
+```yaml
+  auth:
+    module: Auth
+    connections:
+      token_provider:
+        - module_id: rfid_reader
+          implementation_id: main
+```
+
+---
+
+## Payment Terminal Modules
+
+### RsPaymentTerminal — Feig Contactless Payment
+
+The `RsPaymentTerminal` module (Rust-based) integrates Feig contactless payment terminals for in-person credit/debit card authorization at the charger.
+
+**Key config:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ip` | string | IP address of the Feig terminal (e.g. `192.168.0.1`) |
+| `feig_serial` | string | 7-character serial number of the terminal (e.g. `ABCD123`) |
+| `terminal_id` | string | Payment terminal ID |
+| `currency` | integer | ISO 4217 currency code (default `978` = EUR) |
+| `pre_authorization_amount` | integer | Pre-authorization amount in cents (default `2500` = €25.00) |
+| `read_card_timeout` | integer | Seconds to wait for a card (default `2`) |
+
+---
+
+## Selecting and Configuring Hardware Drivers
+
+<Steps>
+  <Step title="Identify the required interfaces for your hardware">
+    Every EvseManager needs at minimum a BSP module (`evse_board_support`). For DC charging also add an isolation monitor (`isolation_monitor`) and a DC power supply (`power_supply_DC`). For billing, add a powermeter (`powermeter`). For access control, add an RFID reader (`auth_token_provider`).
+  </Step>
+  <Step title="Add the driver module to your config">
+    Under `active_modules`, declare a new entry for each hardware driver. Set its `module` field to the driver name (e.g. `YetiDriver`) and fill in `config_implementation` with the hardware-specific parameters (serial port, baud rate, IP address, etc.).
+
+    ```yaml
+    active_modules:
+      yeti_driver:
+        module: YetiDriver
+        config_implementation:
+          main:
+            serial_port: /dev/ttyUSB0
+            baud_rate: 115200
+    ```
+  </Step>
+  <Step title="Wire the driver to EvseManager">
+    In the EvseManager module's `connections` section, point the relevant requirement key at the driver's implementation ID:
+
+    ```yaml
+      evse1:
+        module: EvseManager
+        connections:
+          bsp:
+            - module_id: yeti_driver
+              implementation_id: board_support
+          powermeter_grid_side:
+            - module_id: yeti_driver
+              implementation_id: powermeter
+          ac_rcd:
+            - module_id: yeti_driver
+              implementation_id: rcd
+          connector_lock:
+            - module_id: yeti_driver
+              implementation_id: connector_lock
+    ```
+  </Step>
+  <Step title="For Modbus serial devices, add a SerialCommHub">
+    Multiple Modbus RTU devices on the same RS-485 bus must share a single `SerialCommHub` instance. The hub serializes requests and routes responses to the correct driver module.
+
+    ```yaml
+      serial_hub:
+        module: SerialCommHub
+        config_implementation:
+          main:
+            serial_port: /dev/ttyUSB1
+            baudrate: 9600
+
+      powermeter:
+        module: CarloGavazzi_EM580
+        connections:
+          serial_comm_hub:
+            - module_id: serial_hub
+              implementation_id: main
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+During development and testing without physical hardware, use the `YetiSimulator` module (`modules/Simulation/YetiSimulator/`) in place of any real BSP driver. It emulates the complete `evse_board_support`, `powermeter`, `ac_rcd`, and `connector_lock` interfaces and supports scripted EV behavior for automated testing.
+</Tip>

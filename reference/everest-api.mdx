@@ -1,0 +1,363 @@
+---
+title: 'EVerestAPI: MQTT External API Reference'
+sidebarTitle: 'EVerestAPI'
+description: 'Stable MQTT external API for EVerest using AsyncAPI 3.0. Integrate external apps and hardware via versioned providing and consuming API modules.'
+---
+
+The EVerestAPI is the primary extension point for applications developed outside the EVerest framework. It exposes JSON-encoded data over a public MQTT interface and is specified using **AsyncAPI 3.0** documents, giving external software a stable, versioned contract that does not break between minor or patch releases. Each API module maps directly to one of EVerest's internal interfaces and participates in the standard module lifecycle, meaning it is configured, connected, and monitored just like any built-in module.
+
+## Architecture
+
+The EVerestAPI is implemented as a set of standard EVerest modules located in `modules/API/EVerestAPI/`. Each module implements or consumes exactly one internal interface and bridges that interface to a set of MQTT topics following a fixed naming convention. Because the API modules are ordinary EVerest modules, they are added to the EVerest configuration file and connect to other modules using the normal `requires`/`provides` mechanism.
+
+<Note>
+  The EVerestAPI is designed to remain stable across releases for the same major version. Internal EVerest interfaces may change, but the published MQTT API surface will not introduce breaking changes within a major version.
+</Note>
+
+## Providing APIs vs. Consuming APIs
+
+API modules fall into one of two categories depending on the direction of the integration.
+
+<CardGroup cols={2}>
+  <Card title="Providing APIs" icon="upload">
+    **Providing** APIs let you implement an EVerest interface from outside the framework. The API module owns the EVerest side of the interface and exposes MQTT topics that your external client must subscribe to and publish on. The actual logic—hardware control, business decisions, etc.—lives entirely in the client.
+
+    **Examples:** `power_supply_DC_API`, `auth_token_provider_API`, `auth_token_validator_API`, `evse_board_support_API`, `ev_board_support_API`, `isolation_monitor_API`, `slac_API`, `powermeter_API`, `display_message_API`, `session_cost_API`, `system_API`, `over_voltage_monitor_API`, `generic_error_raiser_API`
+  </Card>
+  <Card title="Consuming APIs" icon="download">
+    **Consuming** APIs let external clients monitor and command internal EVerest modules. The API module subscribes to internal variables and exposes them outbound. Clients subscribe to those topics to observe state and publish to command topics to invoke actions.
+
+    **Examples:** `evse_manager_consumer_API`, `auth_consumer_API`, `ocpp_consumer_API`, `dc_external_derate_consumer_API`, `error_history_consumer_API`, `evse_security_consumer_API`, `external_energy_limits_consumer_API`, `session_cost_consumer_API`
+  </Card>
+</CardGroup>
+
+### Providing API example — `power_supply_DC_API`
+
+The `power_supply_DC_API` module provides the internal `power_supply_DC` interface. Its manifest declares:
+
+```yaml
+provides:
+  main:
+    interface: power_supply_DC
+    description: "Allows EVerest to control a DC power supply device via API clients."
+```
+
+The actual hardware interaction is implemented in your client application. EVerest treats `power_supply_DC_API` exactly like any other power supply driver, while your client communicates over MQTT topics under `everest_api/1/power_supply_DC/<module_id>/`.
+
+### Consuming API example — `evse_manager_consumer_API`
+
+The `evse_manager_consumer_API` module connects to a running `evse_manager` and re-publishes its state outbound over MQTT. Its manifest requires:
+
+```yaml
+requires:
+  evse_manager:
+    interface: evse_manager
+  evse_bsp:
+    interface: evse_board_support
+    min_connections: 0
+    max_connections: 1
+  slac:
+    interface: slac
+    min_connections: 0
+    max_connections: 1
+  imd:
+    interface: isolation_monitor
+    min_connections: 0
+    max_connections: 1
+  ps_dc:
+    interface: power_supply_DC
+    min_connections: 0
+    max_connections: 1
+```
+
+## Available API Modules
+
+The following modules ship in `modules/API/EVerestAPI/`:
+
+| Module | Category | Description |
+|---|---|---|
+| `evse_manager_consumer_API` | Consumer | Monitor EVSE state and send charging commands |
+| `auth_consumer_API` | Consumer | Observe authorization events |
+| `ocpp_consumer_API` | Consumer | Monitor OCPP protocol state |
+| `dc_external_derate_consumer_API` | Consumer | Derate DC power supplies externally |
+| `error_history_consumer_API` | Consumer | Access the historical error log |
+| `evse_security_consumer_API` | Consumer | Monitor EVSE security state |
+| `external_energy_limits_consumer_API` | Consumer | Observe active energy limits |
+| `session_cost_consumer_API` | Consumer | Observe session cost data |
+| `power_supply_DC_API` | Provider | Implement a DC power supply driver externally |
+| `auth_token_provider_API` | Provider | Provide auth tokens from an external source |
+| `auth_token_validator_API` | Provider | Validate auth tokens externally |
+| `powermeter_API` | Provider | Feed power meter readings from external hardware |
+| `evse_board_support_API` | Provider | Implement EVSE board support externally |
+| `ev_board_support_API` | Provider | Implement EV board support externally |
+| `isolation_monitor_API` | Provider | Implement isolation monitoring externally |
+| `slac_API` | Provider | Implement SLAC communication externally |
+| `display_message_API` | Provider | Implement display message handling externally |
+| `session_cost_API` | Provider | Provide session cost calculations externally |
+| `system_API` | Provider | Implement system-level operations externally |
+| `over_voltage_monitor_API` | Provider | Implement over-voltage monitoring externally |
+| `generic_error_raiser_API` | Provider | Raise generic errors from an external process |
+
+## MQTT Topic Structure
+
+All EVerestAPI topics share a fixed prefix and directional segment. The full pattern is:
+
+```text
+everest_api/{api-version}/{api-type}/{instance-id}/{direction}/{api-subtopic}
+```
+
+| Segment | Description |
+|---|---|
+| `api-version` | Integer version of the API, e.g. `1` |
+| `api-type` | The interface type, e.g. `power_supply_DC` |
+| `instance-id` | The `module_id` as declared in the EVerest config, e.g. `ps_dc_1` |
+| `e2m` | EVerest-to-client — published by EVerest, subscribed to by the client |
+| `m2e` | Client-to-EVerest — published by the client, subscribed to by the API module |
+| `api-subtopic` | The specific message name, e.g. `heartbeat` |
+
+A complete example for a DC power supply voltage/current message originating from the client:
+
+```text
+everest_api/1/power_supply_DC/ps_dc_1/m2e/voltage_current
+```
+
+<Tip>
+  Subscribe to `everest_api/#` with any MQTT monitoring tool to observe all API traffic in real time. An `everest_api/ready_beacon` message with an empty JSON payload is published when EVerestAPI modules are online.
+</Tip>
+
+## Latching Variables
+
+Consumer API modules cache the most recently published value for each variable. If a client starts after EVerest has already been running, it may have missed the initial publish. Rather than waiting for the next periodic update, the client can request the current cached value immediately using the **get suffix** pattern:
+
+```text
+<variable-topic>/get
+```
+
+The API module responds with the last known value, or `null` if no value has been published yet.
+
+<Note>
+  Latching is enabled by default. It can be disabled per module instance via the `latch_variable_values` configuration parameter.
+</Note>
+
+### Example: Requesting a cached EVSE status
+
+Publish to the get topic (no payload required):
+
+```text
+everest_api/1/evse_manager/evse_1/m2e/session_info/get
+```
+
+The API module replies on the same topic with the latest cached `session_info` JSON object.
+
+## Request-Reply Pattern
+
+Command invocations and some variable requests use an asynchronous request-reply pattern. The caller writes to the command topic with a JSON envelope:
+
+```json
+{
+  "headers": {
+    "replyTo": "reply/my-client/unique-correlation-id"
+  },
+  "payload": {}
+}
+```
+
+- `payload` — required only for commands that take arguments
+- `headers.replyTo` — the topic the API module publishes the response to; omit if you do not need the result
+
+The API module publishes its response to the `replyTo` topic. It is the client's responsibility to make the `replyTo` topic unique so that concurrent requests can be correlated.
+
+## Communication Monitoring
+
+Both sides of the MQTT connection can detect if the other has become unresponsive.
+
+<Accordion title="Monitoring the EVerestAPI from a client">
+  The API module publishes a periodic heartbeat to:
+
+  ```text
+  everest_api/{api-version}/{api-type}/{instance-id}/e2m/heartbeat
+  ```
+
+  The payload is a monotonically incrementing integer. If the counter stops advancing, the API module process has likely crashed or stalled. The interval is configured via `cfg_heartbeat_interval_ms` (set to `≤ 0` to disable).
+</Accordion>
+
+<Accordion title="Monitoring the client from EVerestAPI">
+  Set `cfg_communication_check_to_s` to a positive integer to enable client liveness checks. The client must periodically publish the raw value `true` (not wrapped in `{}`) to:
+
+  ```text
+  everest_api/{api-version}/{api-type}/{instance-id}/m2e/communication_check
+  ```
+
+  If the client fails to check in within the timeout, the API module raises a `generic/CommunicationFault` error inside EVerest. The error clears automatically when the client resumes sending.
+</Accordion>
+
+<Accordion title="Request-reply timeout">
+  For modules that implement an internal EVerest interface (providing APIs), the parameter `cfg_request_reply_to_s` sets how long the API module waits for the client to reply to a command request. If no reply arrives in time, the API module issues a default response to unblock the internal caller. Because internal EVerest callers have their own timeouts, this value cannot be disabled.
+</Accordion>
+
+## API Discovery — entrypoint_API
+
+The `entrypoint_API` module enables clients to discover which API endpoints are active without hard-coding module IDs.
+
+### Discovering all active APIs
+
+Publish to `everest_api/discover`:
+
+```json
+{
+  "headers": {
+    "replyTo": "reply/my-client/discover-1"
+  }
+}
+```
+
+Each active API module replies independently. Aggregate responses for approximately one second. An example reply:
+
+```json
+{
+  "apis": [
+    {
+      "communication_monitoring": {
+        "communication_check_period_s": 10,
+        "heartbeat_period_ms": 10000
+      },
+      "module_id": "ps_dc_1",
+      "type": "power_supply_DC",
+      "version": 1
+    }
+  ]
+}
+```
+
+### Filtered discovery
+
+To query only modules of a specific type, publish to:
+
+```text
+everest_api/query-modules/power_supply_DC
+```
+
+Only modules whose `type` matches `power_supply_DC` will reply.
+
+## Configuration
+
+API modules are declared in the EVerest configuration file like any other module. The `module_id` you assign becomes the `{instance-id}` segment of every MQTT topic for that module.
+
+```yaml
+active_modules:
+  ps_dc_1:
+    module: power_supply_DC_API
+    access_specification:
+      allow_global_read: true
+    config_module:
+      cfg_communication_check_to_s: 60
+      cfg_heartbeat_interval_ms: 1000
+```
+
+<Tip>
+  Set `allow_global_read: true` in the access specification for EVerestAPI modules. This lets the modules detect when multiple EVerestAPI instances are active and prevents the `ready_beacon` from being sent more than once during startup.
+</Tip>
+
+The same API module type can be loaded multiple times under different `module_id` values — for example, when two DC power supplies are connected:
+
+```yaml
+active_modules:
+  ps_dc_1:
+    module: power_supply_DC_API
+    access_specification:
+      allow_global_read: true
+    config_module:
+      cfg_heartbeat_interval_ms: 1000
+
+  ps_dc_2:
+    module: power_supply_DC_API
+    access_specification:
+      allow_global_read: true
+    config_module:
+      cfg_heartbeat_interval_ms: 1000
+```
+
+This produces two independent topic hierarchies: `everest_api/1/power_supply_DC/ps_dc_1/` and `everest_api/1/power_supply_DC/ps_dc_2/`.
+
+## Common Module Configuration Parameters
+
+Every EVerestAPI module exposes these shared parameters:
+
+<ParamField body="cfg_heartbeat_interval_ms" type="integer" default="1000">
+  Interval in milliseconds between heartbeat publishes. Set to `≤ 0` to disable heartbeat messages. Disabling is not recommended in production.
+</ParamField>
+
+<ParamField body="cfg_communication_check_to_s" type="integer" default="5">
+  Maximum seconds between client communication-check messages. Set to `≤ 0` to disable liveness checking. Disabling is not recommended in production.
+</ParamField>
+
+<ParamField body="cfg_request_reply_to_s" type="integer">
+  Seconds the API module waits for a client reply to a command invocation before issuing a default response. Only present on modules that implement internal interfaces (providing APIs). Cannot be disabled.
+</ParamField>
+
+<ParamField body="latch_variable_values" type="boolean" default="true">
+  When `true`, the module caches the latest published value for each variable, making it available via the `/get` suffix. Present on consumer API modules.
+</ParamField>
+
+## Subscribing to EVSE Status — End-to-End Example
+
+The following steps show how to subscribe to EVSE session events using `evse_manager_consumer_API`.
+
+<Steps>
+  <Step title="Add the module to your EVerest config">
+    ```yaml
+    active_modules:
+      evse_1_api:
+        module: evse_manager_consumer_API
+        access_specification:
+          allow_global_read: true
+        config_module:
+          cfg_heartbeat_interval_ms: 1000
+          cfg_communication_check_to_s: 30
+          latch_variable_values: true
+        connections:
+          evse_manager:
+            - module_id: evse_manager
+              implementation_id: evse
+    ```
+  </Step>
+  <Step title="Subscribe to EVSE variables">
+    Start your MQTT client and subscribe to the session info topic:
+
+    ```bash
+    mosquitto_sub -h localhost -t "everest_api/1/evse_manager/evse_1_api/e2m/#" -v
+    ```
+  </Step>
+  <Step title="Request the current cached state">
+    If EVerest is already running, request the latest cached session info immediately:
+
+    ```bash
+    mosquitto_pub -h localhost \
+      -t "everest_api/1/evse_manager/evse_1_api/m2e/session_info/get" \
+      -m ""
+    ```
+  </Step>
+  <Step title="Send a communication check">
+    Keep the liveness check alive from your client by publishing periodically:
+
+    ```bash
+    mosquitto_pub -h localhost \
+      -t "everest_api/1/evse_manager/evse_1_api/m2e/communication_check" \
+      -m "true"
+    ```
+  </Step>
+</Steps>
+
+## AsyncAPI Specification
+
+Every EVerestAPI module's full channel, message, and schema definition is provided as an **AsyncAPI 3.0** YAML file located at:
+
+```text
+EVerest/docs/source/reference/EVerest_API/<module-name>.yaml
+```
+
+You can open these files directly in [AsyncAPI Studio](https://studio.asyncapi.com/) to browse channels, inspect payload schemas, and understand the request-reply topology for each module. The HTML reference documentation can be generated from the build directory:
+
+```bash
+cmake -DEVEREST_BUILD_DOCS=ON .. && make trailbook_everest
+```

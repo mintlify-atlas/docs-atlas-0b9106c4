@@ -1,0 +1,85 @@
+---
+title: 'EVerest: Open-Source EV Charging Firmware Stack'
+sidebarTitle: 'Introduction'
+description: 'EVerest is a Linux Foundation Energy open-source firmware stack for EV charging stations — modular, standards-compliant, and hardware-agnostic.'
+---
+
+EVerest is an open-source, modular firmware stack for electric vehicle (EV) charging stations, hosted under [Linux Foundation Energy](https://lfenergy.org/). By digitally abstracting the complexity of multiple charging standards and hardware platforms, EVerest runs on everything from simple unmanaged AC home chargers to complex multi-EVSE public DC charging stations with battery storage and solar integration. Its goal is to ensure every car works with every charger and every charging network — interoperably and securely — by translating charging standards into well-tested, production-ready code.
+
+## Why EVerest
+
+The EV charging ecosystem is fragmented: dozens of hardware vendors, multiple evolving protocols, and strict certification requirements make building a reliable charger software stack difficult. EVerest solves this by providing a shared, community-maintained base layer that handles the hardest parts — protocol stacks, hardware abstraction, energy management, and security — so that manufacturers and integrators can focus on their differentiated features instead of reinventing foundations. The project was initiated by PIONIX GmbH and is now an active open-source community under the Apache 2.0 license.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="OCPP 1.6, 2.0.1 & 2.1" icon="plug">
+    Full Open Charge Point Protocol support across all major versions, enabling integration with any CSMS for remote monitoring, billing, and smart charging.
+  </Card>
+  <Card title="ISO 15118 & IEC 61851" icon="bolt">
+    Implementations of ISO 15118-2, -3, and -20 for Plug & Charge and bidirectional charging, plus IEC 61851 and DIN SPEC 70121 for broad vehicle compatibility.
+  </Card>
+  <Card title="Hardware Drivers" icon="microchip">
+    Ready-to-use drivers for BSPs (board support packages), powermeters, isolation monitors, DC power supplies, RFID/NFC readers, and payment terminals.
+  </Card>
+  <Card title="Energy Management" icon="chart-line">
+    Built-in local energy management with PV integration, smart grid support, and an open energy management API for custom demand-response logic.
+  </Card>
+  <Card title="Stable, Standardized APIs" icon="code">
+    EVerestAPI (MQTT / AsyncAPI 3.0) and RpcApi (JSON-RPC over WebSocket) provide stable integration surfaces across module versions.
+  </Card>
+  <Card title="Yocto & OTA Support" icon="layer-group">
+    First-class Yocto support for building custom embedded Linux images, RAUC-based OTA update service, and TPM-secured communication channels.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+EVerest is built around a **microservice-like module architecture**. Each functional unit — a charging port controller, a protocol stack, a hardware driver, an authentication handler — runs as an independent operating system process. All inter-module communication flows through a central **MQTT broker**, keeping modules loosely coupled and independently replaceable.
+
+The **Manager** process is the orchestrator: it reads a YAML configuration file, resolves module dependency graphs, spawns each module as a child process, and supervises the system lifetime. Modules declare their capabilities and requirements in a `manifest.yaml` file. The framework validates connections at startup and routes MQTT messages according to the declared interface topology.
+
+Modules can be written in **C++**, **Python**, **JavaScript**, or **Rust**. The `ev-cli` developer tool generates implementation stubs from manifest and interface definitions, so adding a new module or hardware driver requires writing only the business logic.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   EVerest Manager                   │
+│        (reads config, spawns & supervises)          │
+└────────┬────────────────────────────────┬───────────┘
+         │  MQTT broker (mosquitto)        │
+   ┌─────▼──────┐  ┌──────────────┐  ┌───▼──────────┐
+   │ EvseManager│  │  OCPP 2.0.1  │  │  YetiSimulator│
+   │  (module)  │  │   (module)   │  │   (module)    │
+   └────────────┘  └──────────────┘  └───────────────┘
+```
+
+Each module publishes **VARs** (variables) and exposes **CMDs** (commands) over MQTT. Connected modules subscribe to VARs they need and call CMDs they require, as declared in their manifests. This design allows modules to be swapped at configuration time without recompiling the rest of the stack.
+
+## Hardware Requirements
+
+EVerest can run on any Linux-based operating system that provides the required dependencies. Yocto is the strongly recommended platform for production deployments. The resource footprint scales with the number of active modules; the table below shows the general minimums.
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| CPU | imx6ULL or comparable | imx93 or AM62x |
+| RAM | 512 MB | 1 GB or more |
+| Flash | 1 GB | 4 GB or more |
+
+For development and simulation work, EVerest runs comfortably on any modern x86-64 Linux workstation or inside a dev container on macOS or Windows via Docker.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Software Quickstart" icon="rocket" href="/quickstart">
+    Build EVerest from source on Linux and run the software-in-the-loop simulation in under an hour.
+  </Card>
+  <Card title="Hardware Bring-Up" icon="circuit-board" href="/quickstart-hardware">
+    Bring EVerest up on real charging hardware step by step, from control pilot verification to a live charging session.
+  </Card>
+  <Card title="Module Concept" icon="puzzle-piece" href="/concepts/module-concept">
+    Understand how EVerest modules, interfaces, and types work together to compose a full charging station stack.
+  </Card>
+  <Card title="API Reference" icon="book" href="/reference/everest-api">
+    Explore the EVerestAPI (MQTT/AsyncAPI 3.0) and RpcApi (JSON-RPC WebSocket) integration surfaces.
+  </Card>
+</CardGroup>

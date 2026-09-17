@@ -1,0 +1,159 @@
+---
+title: 'Contributing Code and Documentation to EVerest'
+sidebarTitle: 'Contributing'
+description: 'Learn how to contribute code, docs, and bug reports to EVerest — covering coding style, pull request workflow, DCO sign-off, and AI contribution policy.'
+---
+
+EVerest is a community-driven project and welcomes contributions of all kinds: bug reports, feature requests, code improvements, documentation updates, and testing. This guide walks you through the contribution workflow, from opening your first issue to getting a pull request merged. Before contributing, take a moment to read the [EVerest Governance Policy](https://everest.github.io/nightly/project/governance/governance.html) to understand the roles involved — Contributors, Committers, and Maintainers — and the [Code of Conduct](https://lfprojects.org/policies/code-of-conduct/) that all participants are expected to follow.
+
+## Ways to Contribute
+
+<CardGroup cols={2}>
+  <Card title="Report a Bug" icon="bug">
+    Open a GitHub issue in the relevant repository. Use the provided bug report template and include a clear description, reproduction steps, and the versions involved.
+  </Card>
+  <Card title="Request a Feature" icon="lightbulb">
+    Open a GitHub issue using the feature request template. For significant changes, discuss the idea in Zulip or a working group call first to build community alignment.
+  </Card>
+  <Card title="Submit Code" icon="code">
+    Fork the repository, implement your change, and open a pull request. Every code PR must include tests, documentation, a DCO sign-off, and appropriate copyright headers.
+  </Card>
+  <Card title="Improve Documentation" icon="book-open">
+    Documentation contributions follow a separate workflow described in the [EVerest documentation guide](https://everest.github.io/nightly/explanation/the-everest-documentation.html). Small fixes can be submitted directly; larger restructuring should be discussed first.
+  </Card>
+</CardGroup>
+
+## Discussing Changes Before You Code
+
+Real-time discussion often leads to faster resolution and a clearer design than back-and-forth in GitHub comments alone. EVerest uses [Zulip](https://lfenergy.zulipchat.com/) as its primary communication platform. Threaded streams keep technical discussions organized and searchable.
+
+**When to open a discussion in Zulip first:**
+
+- You are planning a significant architectural change.
+- You want to know whether a feature is already on the roadmap or in progress.
+- You are unsure whether your proposed design fits the EVerest module architecture.
+- You are looking for co-maintainers or co-funders for a larger piece of work.
+
+<Note>
+  Contributions that were discussed with the community beforehand get reviewed and merged considerably faster. If in doubt, ask in Zulip before opening a PR.
+</Note>
+
+When a Zulip discussion leads to actionable tasks or a confirmed design, summarize the outcome and create a corresponding GitHub issue to enable clear tracking.
+
+## Filing Issues
+
+GitHub issues are the canonical place to track bugs and approved feature requests. When filing:
+
+- Use the issue templates provided in each repository — they prompt for all necessary information.
+- For bugs, include steps to reproduce, expected vs. actual behavior, and the EVerest version or commit.
+- For feature requests, every pull request that implements a feature **must link the corresponding issue**.
+- Bug-fix PRs do not necessarily need a linked issue, but must include a clear description of the bug being fixed.
+
+Common labels to look for when browsing issues: `bug`, `enhancement`, `documentation`, `help-wanted`, `good-first-issue`.
+
+## Pull Request Process
+
+<Steps>
+  <Step title="Fork and branch">
+    Fork the target repository on GitHub and create a focused branch for your change. Keep branches scoped to a single logical change to make reviews tractable and the commit history clean.
+  </Step>
+  <Step title="Implement your change">
+    Write your code following the relevant coding style guides (see [Coding Guidelines](#coding-guidelines) below). Add or update tests and documentation to cover the new or modified functionality. Ensure any new files carry the correct copyright and license headers.
+  </Step>
+  <Step title="Sign off with DCO">
+    Every commit must carry a [Developer Certificate of Origin (DCO)](https://github.com/lf-energy/tac/blob/main/process/contribution_guidelines.md#contribution-sign-off) sign-off. Add it with:
+
+    ```bash
+    git commit -s -m "Your commit message"
+    ```
+
+    This appends a `Signed-off-by: Your Name <email>` trailer to the commit, affirming that you have the right to submit the code under the project license.
+  </Step>
+  <Step title="Open the pull request">
+    Push your branch and open a pull request against the target repository. Fill in the PR description template — explain **what** changed, **why** it was changed, and note any impact on existing behavior. Feature PRs must link the associated issue.
+  </Step>
+  <Step title="Respond to review feedback">
+    The CODEOWNERS for the affected areas are automatically notified and will begin review. If reviewers request changes, push additional commits to address the feedback. **Do not rebase and force-push during an active review** — keeping the commit history intact lets reviewers quickly verify that their concerns have been addressed.
+  </Step>
+  <Step title="Merge">
+    Once all reviewers approve and CI passes, a project Committer or Maintainer will merge the pull request. Project committers aim to review contributions in a timely manner.
+  </Step>
+</Steps>
+
+<Tip>
+  Use **draft pull requests** to share work-in-progress and start a discussion before the change is ready for formal review. Convert the draft to "Ready for review" when you want CODEOWNERS to be notified.
+</Tip>
+
+## Commit Message Conventions
+
+Each commit message and pull request description must contain enough context for other contributors to understand what changed and why, and to assess the potential impact. Follow these guidelines:
+
+- **First line:** short imperative summary, ideally 50 characters or fewer (e.g., `Fix null dereference in EvseManager startup`).
+- **Body:** wrap at 72 characters. Explain the motivation and contrast the new behavior with the old. Reference related issues with `Fixes #123` or `Refs #456`.
+- **Trailers:** include `Signed-off-by` (DCO) and any `Co-authored-by` lines.
+
+```text
+Fix null dereference in EvseManager startup sequence
+
+The connector state machine was accessed before initialization
+completed when no hardware abstraction module was configured.
+Add a null guard and log a warning instead of crashing.
+
+Fixes #789
+Signed-off-by: Jane Contributor <jane@example.com>
+```
+
+## Coding Guidelines
+
+All contributions must conform to the coding style used in the target repository.
+
+<Tabs>
+  <Tab title="C++">
+    EVerest C++ code is formatted with `clang-format` using the configuration in [`.clang-format`](https://github.com/EVerest/EVerest/blob/main/.clang-format) at the repository root. Run `clang-format` on all modified files before committing.
+
+    Additional C++ conventions — naming, error handling, use of standard library types, and module interface patterns — are documented in the [C++ Coding Guidelines](https://everest.github.io/nightly/how-to-guides/c++-coding-guidelines.html).
+
+    Key points:
+    - Follow the existing naming style in the file you are editing.
+    - Prefer references and smart pointers over raw pointers.
+    - Document public API methods with Doxygen-style comments.
+    - Write unit tests for new logic; integration tests for new module behavior.
+  </Tab>
+  <Tab title="JavaScript / TypeScript">
+    JavaScript and TypeScript code is linted with ESLint using the configuration in [`.eslintrc.json`](https://github.com/EVerest/EVerest/blob/main/.eslintrc.json) at the repository root. Run `eslint --fix` on modified files before committing.
+  </Tab>
+  <Tab title="Python">
+    Python modules should follow PEP 8. Use type annotations for all public functions. Include docstrings for modules, classes, and public methods.
+  </Tab>
+  <Tab title="Rust">
+    Rust code must pass `cargo fmt` and `cargo clippy` without warnings. Follow standard Rust API design guidelines.
+  </Tab>
+</Tabs>
+
+## Backporting to Stable Releases
+
+EVerest maintains stable release branches (e.g., `stable/2026.02`). Critical bug fixes may be backported from `main` to the current stable branch.
+
+- Mark a PR as a backport candidate by applying the `backport-candidate` label.
+- Maintainers trigger the automated backport workflow by adding a label in the format `backport stable/yyyy.mm`. This creates a cherry-pick PR targeting that branch once the original is merged.
+- If the cherry-pick does not apply cleanly, the workflow posts a comment on the original PR and the backport must be performed manually.
+
+## AI-Generated Contributions
+
+EVerest aligns with the [Linux Foundation's guidance on generative AI in open source development](https://www.linuxfoundation.org/legal/generative-ai). The use of AI coding tools is not prohibited, but:
+
+- Every contribution must be **reviewed and fully understood** by the human contributor who submits it.
+- The submitter must be able to justify the technical approach and explain any change during review.
+- All submitted code is the responsibility of the contributor, not the AI tool.
+
+<Warning>
+  Submitting AI-generated code that you have not read, understood, and verified is not acceptable. Reviewers may ask you to explain any part of your contribution in detail.
+</Warning>
+
+## Licensing
+
+EVerest is licensed under the [Apache License 2.0](https://github.com/EVerest/EVerest/blob/main/LICENSE). All contributions must be compatible with this license. Contributors are responsible for ensuring that any third-party code or libraries included in their submission do not introduce conflicting license obligations or copyright issues. New files must include the standard Apache 2.0 copyright and license header as described in the [LF Energy contribution guidelines](https://github.com/lf-energy/tac/blob/main/process/contribution_guidelines.md#license).
+
+## Code of Conduct
+
+All EVerest community interactions — in Zulip, GitHub, mailing lists, and video calls — are governed by the [Linux Foundation Projects Code of Conduct](https://lfprojects.org/policies/code-of-conduct/). Respectful, inclusive communication is expected from all participants. If you witness or experience a violation, contact the TSC or report through the LF Energy conduct channels.

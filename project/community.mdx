@@ -1,0 +1,129 @@
+---
+title: 'EVerest Community: Get Involved and Connect'
+sidebarTitle: 'Community'
+description: 'Join EVerest under Linux Foundation Energy via Zulip, mailing lists, weekly calls, and working groups shaping the future of open EV charging firmware.'
+---
+
+EVerest is an open-source project under the [Linux Foundation Energy](https://lfenergy.org/) umbrella, developed by a global community of engineers, companies, and enthusiasts who share a common goal: an open, modular, and interoperable firmware stack for EV charging infrastructure. Whether you are integrating EVerest into a commercial product, researching EV protocols, or simply curious about the technology, the community welcomes your participation.
+
+## Communication Channels
+
+EVerest offers several ways to connect with other contributors and users, ranging from real-time chat to structured email lists.
+
+<CardGroup cols={2}>
+  <Card title="Zulip Chat" icon="comments" href="https://lfenergy.zulipchat.com/">
+    The primary venue for technical discussion. Threaded channels for every topic keep conversations organized and searchable. Browse the README channel for an overview of available streams.
+  </Card>
+  <Card title="Announcement List" icon="envelope" href="https://lists.lfenergy.org/g/everest-announce">
+    Subscribe to receive important news and events. Low-traffic and essential for staying up to date on releases and community milestones.
+  </Card>
+  <Card title="Technical Mailing List" icon="envelope-open-text" href="https://lists.lfenergy.org/g/everest">
+    A higher-traffic list for technical discussions, proposals, and roadmap input, ideal if email is your preferred channel.
+  </Card>
+  <Card title="GitHub" icon="github" href="https://github.com/EVerest">
+    File issues, open pull requests, and browse source across the entire EVerest organization. Issue and PR templates are provided for bugs and feature requests.
+  </Card>
+</CardGroup>
+
+<Tip>
+  If you have a question and are not sure where to start, drop a message in the **#general** stream on Zulip or join the weekly General EVerest Welcome Call described below.
+</Tip>
+
+## Live Meetings and Working Groups
+
+The community meets regularly through video calls that are open to everyone. Dial-in links and the full schedule are published in the [official EVerest event calendar](https://zoom-lfx.platform.linuxfoundation.org/meetings/everest?view=week).
+
+### General EVerest Welcome Call
+
+The General EVerest Welcome Call is a weekly, non-technical meeting held every **Tuesday at 11:00 CET/CEST**. It is the best entry point for newcomers who want to understand how the community is organized, ask questions about their specific use case, or find out which working group is the right fit for them.
+
+### Technical Working Groups
+
+Working groups focus on dedicated areas of EVerest development. Each group has a regular call where members exchange status updates, discuss design decisions, and plan upcoming work. The groups evolve over time as community priorities shift.
+
+<Accordion title="Car Communication">
+  **Scope:** Communication between the EV and the charger, covering ISO 15118, EXI encoding/decoding, SLAC, and CHAdeMO.
+
+  **Chair & Tech Lead:** Sebastian Lukas ([@SebaLukas](https://github.com/SebaLukas))
+</Accordion>
+
+<Accordion title="Cloud Communication">
+  **Scope:** Communication between the charger and cloud backends, including OCPP 1.6, OCPP 2.0.1, OCPP 2.1, OCPI, and EEBus.
+
+  **Chair & Tech Lead:** Piet Gömpel ([@Pietfried](https://github.com/pietfried))
+</Accordion>
+
+<Accordion title="Energy Management">
+  **Scope:** Load management, smart charging, V2G, and integration with external energy management systems.
+
+  **Chair & Tech Lead:** Piet Gömpel ([@Pietfried](https://github.com/pietfried))
+</Accordion>
+
+<Accordion title="MCS – Megawatt Charging System">
+  **Scope:** Development and implementation of the MCS standard for high-power charging, including high-level and low-level communication protocols.
+
+  **Chair & Tech Lead:** Sebastian Lukas ([@SebaLukas](https://github.com/SebaLukas))
+</Accordion>
+
+<Note>
+  If you are working on a topic that does not yet have a dedicated working group, raise it in Zulip or at the General Welcome Call. If there is enough interest, a new group can be created.
+</Note>
+
+## Technical Steering Committee
+
+The Technical Steering Committee (TSC) is the governing body of the EVerest project. It is responsible for overall project health and direction, coordination of activities, resolution of technical disputes, and working with other projects and committees within Linux Foundation Energy.
+
+TSC meetings are open to the community. You can find the current TSC members, meeting minutes, and participation instructions in the [TSC documentation](https://everest.github.io/nightly/project/governance/tsc/).
+
+**TSC responsibilities include:**
+- Setting the overall technical roadmap
+- Approving new committers and maintainers
+- Defining and updating governance policies
+- Coordinating major releases and cross-cutting initiatives
+- Representing EVerest within the broader LF Energy ecosystem
+
+## Governance Model
+
+EVerest is governed in a transparent and accessible manner. Participation is open and not bound to any corporate affiliation. The project follows a meritocratic ladder with three contributor roles:
+
+| Role | Description |
+|---|---|
+| **Contributor** | Anyone who submits code, documentation, or other content to the project. |
+| **Committer** | Has write access to repositories; reviews and merges pull requests after approval; actively triages issues. |
+| **Maintainer** | A committer with defined code ownership (listed in `.github/CODEOWNERS`); automatically requested as reviewer for their areas. |
+
+Advancement through these roles is merit-based and governed by the TSC. The full governance policy, including the voting process and conflict-resolution procedure, is documented in the [EVerest Governance Policy](https://everest.github.io/nightly/project/governance/governance.html). The formal technical charter is available from the [LF Energy foundation repository](https://github.com/lf-energy/foundation/blob/main/project_charters/everest_charter.pdf).
+
+All community members are bound by the [Linux Foundation Projects Code of Conduct](https://lfprojects.org/policies/code-of-conduct/).
+
+## Security Policy
+
+EVerest takes security seriously. If you discover a vulnerability, please **do not** file a public GitHub issue. Instead, use one of the following private reporting paths:
+
+<CardGroup cols={2}>
+  <Card title="Security Mailing List" icon="shield-halved">
+    Send details to **everest-security@lists.lfenergy.org**. The team monitors this list on working days and aims to respond within 7 days.
+  </Card>
+  <Card title="GitHub Private Reporting" icon="github" href="https://github.com/EVerest/EVerest/security">
+    Use the **"Report a vulnerability"** feature on GitHub, which is enabled across all EVerest repositories.
+  </Card>
+</CardGroup>
+
+When reporting, please include your severity assessment and as many technical details as you can provide — reproduction steps, affected versions, and potential exploit vectors all help the team respond faster.
+
+The [EVerest Security Policy](https://everest.github.io/nightly/project/governance/security.html) describes the full process, including supported version windows for security backports.
+
+## LF Energy EV Charging Special Interest Group
+
+Beyond EVerest itself, Linux Foundation Energy hosts an EV Charging Special Interest Group (SIG) that brings together participants from multiple LFE projects. The SIG focuses on exchanging experience, sharing best practices, discussing industry trends, and tackling cross-project challenges.
+
+Participation is free and open to anyone working in the EV charging space, whether or not they contribute to EVerest directly.
+
+- **Mailing list:** [ev-charging-sig on LF Energy lists](https://lists.lfenergy.org/g/ev-charging-sig)
+- **Meeting calendar:** [EV Charging SIG Zoom](https://zoom-lfx.platform.linuxfoundation.org/meetings/ev-charging-sig)
+
+## Roadmap
+
+The EVerest roadmap is driven by the community and updated through formal alignment rounds held one to two times per year. Between rounds, working groups continue to refine near-term priorities. The roadmap is a statement of current intent, not a delivery commitment — it moves as contributors, priorities, and standards evolve.
+
+To see what is planned or to contribute your own input, join the relevant working group or review the published [EVerest Roadmap](https://everest.github.io/nightly/project/roadmap.html).
